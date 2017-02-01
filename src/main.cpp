@@ -117,87 +117,6 @@ struct Bone
 };
 
 
-int numTabs = 0;
-
-void PrintTabs() {
-	for (int i = 0; i < numTabs; i++)
-		printf("\t");
-}
-
-/**
-* Return a string-based representation based on the attribute type.
-*/
-FbxString GetAttributeTypeName(FbxNodeAttribute::EType type) {
-	switch (type) {
-	case FbxNodeAttribute::eUnknown: return "unidentified";
-	case FbxNodeAttribute::eNull: return "null";
-	case FbxNodeAttribute::eMarker: return "marker";
-	case FbxNodeAttribute::eSkeleton: return "skeleton";
-	case FbxNodeAttribute::eMesh: return "mesh";
-	case FbxNodeAttribute::eNurbs: return "nurbs";
-	case FbxNodeAttribute::ePatch: return "patch";
-	case FbxNodeAttribute::eCamera: return "camera";
-	case FbxNodeAttribute::eCameraStereo: return "stereo";
-	case FbxNodeAttribute::eCameraSwitcher: return "camera switcher";
-	case FbxNodeAttribute::eLight: return "light";
-	case FbxNodeAttribute::eOpticalReference: return "optical reference";
-	case FbxNodeAttribute::eOpticalMarker: return "marker";
-	case FbxNodeAttribute::eNurbsCurve: return "nurbs curve";
-	case FbxNodeAttribute::eTrimNurbsSurface: return "trim nurbs surface";
-	case FbxNodeAttribute::eBoundary: return "boundary";
-	case FbxNodeAttribute::eNurbsSurface: return "nurbs surface";
-	case FbxNodeAttribute::eShape: return "shape";
-	case FbxNodeAttribute::eLODGroup: return "lodgroup";
-	case FbxNodeAttribute::eSubDiv: return "subdiv";
-	default: return "unknown";
-	}
-}
-
-/**
-* Print an attribute.
-*/
-void PrintAttribute(FbxNodeAttribute* pAttribute) {
-	if (!pAttribute) return;
-
-	FbxString typeName = GetAttributeTypeName(pAttribute->GetAttributeType());
-	FbxString attrName = pAttribute->GetName();
-	PrintTabs();
-	// Note: to retrieve the character array of a FbxString, use its Buffer() method.
-	printf("<attribute type='%s' name='%s'/>\n", typeName.Buffer(), attrName.Buffer());
-}
-
-/**
-* Print a node, its attributes, and all its children recursively.
-*/
-void PrintNode(FbxNode* pNode) {
-	PrintTabs();
-	const char* nodeName = pNode->GetName();
-	FbxDouble3 translation = pNode->LclTranslation.Get();
-	FbxDouble3 rotation = pNode->LclRotation.Get();
-	FbxDouble3 scaling = pNode->LclScaling.Get();
-
-	// Print the contents of the node.
-	printf("<node name='%s' translation='(%f, %f, %f)' rotation='(%f, %f, %f)' scaling='(%f, %f, %f)'>\n",
-		nodeName,
-		translation[0], translation[1], translation[2],
-		rotation[0], rotation[1], rotation[2],
-		scaling[0], scaling[1], scaling[2]
-	);
-	numTabs++;
-
-	// Print the node's attributes.
-	for (int i = 0; i < pNode->GetNodeAttributeCount(); i++)
-		PrintAttribute(pNode->GetNodeAttributeByIndex(i));
-
-	// Recursively print the children.
-	for (int j = 0; j < pNode->GetChildCount(); j++)
-		PrintNode(pNode->GetChild(j));
-
-	numTabs--;
-	PrintTabs();
-	printf("</node>\n");
-}
-
 #pragma pack(1)
 struct Vertex
 {
@@ -387,6 +306,7 @@ void writeGeometry(FbxMesh** meshes, int count, FbxNode** bones)
 			for (float& w : s.weights) w /= sum;
 		}
 
+		auto* cluster = skin->GetCluster(0);
 		u16 index = 0;
 		for (int i = 0, c = mesh->GetPolygonCount(); i < c; ++i)
 		{
@@ -398,6 +318,14 @@ void writeGeometry(FbxMesh** meshes, int count, FbxNode** bones)
 				Skin skin = skinning[vertex_index];
 				FbxVector4 cp = mesh->GetControlPointAt(vertex_index);
 				Vertex v;
+				FbxAMatrix transform_matrix;
+				FbxAMatrix geometry_matrix(
+					mesh->GetNode()->GetGeometricTranslation(FbxNode::eSourcePivot),
+					mesh->GetNode()->GetGeometricRotation(FbxNode::eSourcePivot),
+					mesh->GetNode()->GetGeometricScaling(FbxNode::eSourcePivot));
+				cluster->GetTransformMatrix(transform_matrix);
+				transform_matrix *= geometry_matrix;
+				cp = transform_matrix.MultT(cp);
 				v.px = (float)cp.mData[0];
 				v.py = (float)cp.mData[1];
 				v.pz = (float)cp.mData[2];
@@ -456,7 +384,10 @@ FbxAMatrix getBindPoseMatrix(FbxMesh* mesh, FbxNode* node)
 	cluster->GetTransformLinkMatrix(transform_link_matrix);
 
 	const FbxAMatrix inverse_bind_pose =
-	transform_link_matrix.Inverse() * transform_matrix;
+	transform_link_matrix.Inverse() /** transform_matrix*/;
+
+	auto scale = transform_link_matrix.GetS().mData[0];
+	assert(scale > 0.99 && scale < 1.01);
 
 	const FbxAMatrix bind_pose = inverse_bind_pose.Inverse();
 
@@ -602,7 +533,7 @@ void writeMaterials(const char* dir, FbxSurfaceMaterial** materials, int count)
 
 		if (texture)
 		{
-			writeString(",\n\t\"texture\" : { \"src\" : \"");
+			writeString(",\n\t\"texture\" : { \"source\" : \"");
 			char filename[_MAX_PATH];
 			getBasename(filename, texture->GetFileName());
 			writeString(filename);
@@ -610,7 +541,7 @@ void writeMaterials(const char* dir, FbxSurfaceMaterial** materials, int count)
 		}
 		else
 		{
-			writeString(",\n\t\"texture\" : { \"src\" : \"\" }");
+			writeString(",\n\t\"texture\" : { \"source\" : \"\" }");
 		}
 
 		FbxProperty normal = material->FindProperty(FbxSurfaceMaterial::sNormalMap);
@@ -618,7 +549,7 @@ void writeMaterials(const char* dir, FbxSurfaceMaterial** materials, int count)
 
 		if (texture)
 		{
-			writeString(",\n\t\"texture\" : { \"src\" : \"");
+			writeString(",\n\t\"texture\" : { \"source\" : \"");
 			char filename[_MAX_PATH];
 			getBasename(filename, texture->GetFileName());
 			writeString(filename);
@@ -626,7 +557,7 @@ void writeMaterials(const char* dir, FbxSurfaceMaterial** materials, int count)
 		}
 		else
 		{
-			writeString(",\n\t\"texture\" : { \"src\" : \"\" }");
+			writeString(",\n\t\"texture\" : { \"source\" : \"\" }");
 		}
 
 
@@ -734,6 +665,8 @@ void writeAnimations(FbxScene* scene, FbxNode** bones, int bone_count)
 			{
 				float t = f * sampling_period;
 				FbxAMatrix mtx = eval->GetNodeLocalTransform(bone, FbxTimeSeconds(t));
+				auto scale = mtx.GetS().mData[0];
+				assert(scale > 0.99f && scale < 1.01f);
 				for (int i = 0; i < 3; ++i) write((float)mtx.GetT().mData[i]);
 			}
 			write(frames);
@@ -752,44 +685,32 @@ void writeAnimations(FbxScene* scene, FbxNode** bones, int bone_count)
 
 int main(int argc, char** argv) {
 
-	// Change the following filename to a suitable filename value.
-#define SRC_FBX 3
-#if SRC_FBX == 0
-	const char* lFilename = "default_pose_char+wep.fbx";
-#elif SRC_FBX == 1
-	const char* lFilename = "sako85_shot.fbx";
-#elif SRC_FBX == 2
-	const char* lFilename = "default_pose_char.fbx";
-#elif SRC_FBX == 3
-	const char* lFilename = "sako85_shot(1).fbx"; // without scale
-#else
-	const char* lFilename = "default_pose_wep.fbx";
-#endif
+	#define SRC_FBX 1
+	#if SRC_FBX == 0
+		const char* lFilename = "char+wep.fbx";
+	#elif SRC_FBX == 1
+		const char* lFilename = "shot.fbx";
+	#elif SRC_FBX == 2
+		const char* lFilename = "char.fbx";
+	#else
+		const char* lFilename = "wep.fbx";
+	#endif
 
-	// Initialize the SDK manager. This object handles all our memory management.
 	FbxManager* lSdkManager = FbxManager::Create();
-
-	// Create the IO settings object.
 	FbxIOSettings *ios = FbxIOSettings::Create(lSdkManager, IOSROOT);
 	lSdkManager->SetIOSettings(ios);
 
-	// Create an importer using the SDK manager.
 	FbxImporter* lImporter = FbxImporter::Create(lSdkManager, "");
 
-	// Use the first argument as the filename for the importer.
 	if (!lImporter->Initialize(lFilename, -1, lSdkManager->GetIOSettings())) {
 		printf("Call to FbxImporter::Initialize() failed.\n");
 		printf("Error returned: %s\n\n", lImporter->GetStatus().GetErrorString());
 		exit(-1);
 	}
 
-	// Create a new scene so that it can be populated by the imported file.
 	FbxScene* lScene = FbxScene::Create(lSdkManager, "myScene");
 
-	// Import the contents of the file into the scene.
 	lImporter->Import(lScene);
-
-	// The file is imported; so get rid of the importer.
 	lImporter->Destroy();
 
 	FbxNode* lRootNode = lScene->GetRootNode();
@@ -801,9 +722,6 @@ int main(int argc, char** argv) {
 	gatherBones(lRootNode, bones);
 
 
-	// TODO move to the end, so it does not influence matrices
-	writeAnimations(lScene, &bones[0], (int)bones.size());
-
 	fopen_s(&fp, "C:/projects/hunter/models/test/out.msh", "wb");
 
 	writeModelHeader();
@@ -811,13 +729,9 @@ int main(int argc, char** argv) {
 	writeGeometry(&meshes[0], (int)meshes.size(), &bones[0]);
 	writeSkeleton(&bones[0], (int)bones.size(), &meshes[0], (int)meshes.size());
 	writeLODs((int)meshes.size());
-
-	if (lRootNode) {
-		for (int i = 0; i < lRootNode->GetChildCount(); i++)
-			PrintNode(lRootNode->GetChild(i));
-	}
-	// Destroy the SDK manager and all the other objects it was handling.
 	fclose(fp);
+
+	writeAnimations(lScene, &bones[0], (int)bones.size());
 
 	//writeMaterials("C:/projects/hunter/models/test/" ,&materials[0], (int)materials.size());
 

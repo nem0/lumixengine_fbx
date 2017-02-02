@@ -6,6 +6,7 @@
 #include "engine/crc32.h"
 #include "engine/fs/os_file.h"
 #include "engine/iplugin.h"
+#include "engine/lua_wrapper.h"
 #include "engine/path_utils.h"
 #include "imgui/imgui.h"
 #include "renderer/model.h"
@@ -247,10 +248,98 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		fbx_manager = FbxManager::Create();
 		FbxIOSettings* ios = FbxIOSettings::Create(fbx_manager, IOSROOT);
 		fbx_manager->SetIOSettings(ios);
+
+		registerLuaAPI();
 	}
 
 
-	bool import(const char* filename)
+	static int LUA_setParams(lua_State* L)
+	{
+		auto* dlg = LuaWrapper::checkArg<ImportFBXPlugin*>(L, 1);
+		LuaWrapper::checkTableArg(L, 2);
+
+		if (lua_getfield(L, 2, "output_dir") == LUA_TSTRING)
+		{
+			dlg->output_dir = LuaWrapper::toType<const char*>(L, -1);
+		}
+		lua_pop(L, 1);
+		if (lua_getfield(L, 2, "scale") == LUA_TNUMBER)
+		{
+			dlg->mesh_scale = LuaWrapper::toType<float>(L, -1);
+		}
+		lua_pop(L, 1);
+		return 0;
+	}
+
+
+
+	static int LUA_setMaterialParams(lua_State* L)
+	{
+		auto* dlg = LuaWrapper::checkArg<ImportFBXPlugin*>(L, 1);
+		int material_idx = LuaWrapper::checkArg<int>(L, 2);
+		LuaWrapper::checkTableArg(L, 3);
+		if (material_idx < 0 || material_idx >= dlg->materials.size()) return 0;
+
+		ImportMaterial& material = dlg->materials[material_idx];
+
+		lua_pushvalue(L, 3);
+
+		if (lua_getfield(L, -1, "import") == LUA_TBOOLEAN)
+		{
+			material.import = LuaWrapper::toType<bool>(L, -1);
+		}
+		lua_pop(L, 1); // "import"
+
+		if (lua_getfield(L, -1, "alpha_cutout") == LUA_TBOOLEAN)
+		{
+			material.alpha_cutout = LuaWrapper::toType<bool>(L, -1);
+		}
+		lua_pop(L, 1); // "alpha_cutout"
+
+		lua_pop(L, 1); // table
+		return 0;
+	}
+
+	
+	int getMaterialsCount()
+	{
+		return materials.size();
+	}
+
+
+	void registerLuaAPI()
+	{
+		Engine& engine = app.getWorldEditor()->getEngine();
+		lua_State* L = engine.getState();
+
+		LuaWrapper::createSystemVariable(L, "ImportFBX", "instance", this);
+
+		#define REGISTER_FUNCTION(name) \
+			do {\
+				auto f = &LuaWrapper::wrapMethod<ImportFBXPlugin, decltype(&ImportFBXPlugin::name), &ImportFBXPlugin::name>; \
+				LuaWrapper::createSystemFunction(L, "ImportFBX", #name, f); \
+			} while(false) \
+
+		REGISTER_FUNCTION(addSource);
+		REGISTER_FUNCTION(clearSources);
+		REGISTER_FUNCTION(import);
+		REGISTER_FUNCTION(getMaterialsCount);
+
+		#undef REGISTER_FUNCTION
+
+		#define REGISTER_FUNCTION(name) \
+			do {\
+				LuaWrapper::createSystemFunction(L, "ImportFBX", #name, &LUA_##name); \
+			} while(false) \
+
+		REGISTER_FUNCTION(setParams);
+		REGISTER_FUNCTION(setMaterialParams);
+
+		#undef REGISTER_FUNCTION
+	}
+
+
+	bool addSource(const char* filename)
 	{
 		FbxImporter* importer = FbxImporter::Create(fbx_manager, "");
 
@@ -325,9 +414,10 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			if (texture)
 			{
 				writeString(",\n\t\"texture\" : { \"source\" : \"");
-				char filename[_MAX_PATH];
-				PathUtils::getBasename(filename, lengthOf(filename), texture->GetFileName());
-				writeString(filename);
+				PathUtils::FileInfo info(texture->GetFileName());
+				writeString(info.m_basename);
+				writeString(".");
+				writeString(info.m_extension);
 				writeString("\" } ");
 			}
 			else
@@ -341,9 +431,10 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			if (texture)
 			{
 				writeString(",\n\t\"texture\" : { \"source\" : \"");
-				char filename[_MAX_PATH];
-				PathUtils::getBasename(filename, lengthOf(filename), texture->GetFileName());
-				writeString(filename);
+				PathUtils::FileInfo info(texture->GetFileName());
+				writeString(info.m_basename);
+				writeString(".");
+				writeString(info.m_extension);
 				writeString("\" } ");
 			}
 			else
@@ -690,7 +781,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
-	bool convert()
+	bool import()
 	{
 		StaticString<MAX_PATH_LENGTH> out_path(output_dir, output_mesh_filename, ".msh");
 		if (!out_file.open(out_path, FS::Mode::CREATE_AND_WRITE, app.getWorldEditor()->getAllocator()))
@@ -723,7 +814,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
-	void clearScenes()
+	void clearSources()
 	{
 		for (FbxScene* scene : scenes) scene->Destroy();
 		scenes.clear();
@@ -891,14 +982,14 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 				char src_path[MAX_PATH_LENGTH];
 				if (PlatformInterface::getOpenFilename(src_path, lengthOf(src_path), "All\0*.*\0", nullptr))
 				{
-					import(src_path);
+					addSource(src_path);
 				}
 			}
 
 			if (!scenes.empty())
 			{
 				ImGui::SameLine();
-				if (ImGui::Button("Clear sources")) clearScenes();
+				if (ImGui::Button("Clear sources")) clearSources();
 				
 				onMeshesGUI();
 				onMaterialsGUI();
@@ -914,7 +1005,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 					}
 				}
 
-				if (ImGui::Button("Convert")) convert();
+				if (ImGui::Button("Convert")) import();
 			}
 		}
 		ImGui::EndDock();

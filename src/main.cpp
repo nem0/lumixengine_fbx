@@ -578,9 +578,12 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 			FbxTimeSpan time_spawn;
 			const FbxTakeInfo* take_info = scene->GetTakeInfo(stack->GetName());
+			StaticString<64> name("anim", i);
 			if (take_info)
 			{
 				time_spawn = take_info->mLocalTimeSpan;
+				if (!take_info->mName.IsEmpty()) name = take_info->mName.Buffer();
+				if (name.data[0] == 0 && !take_info->mImportName.IsEmpty()) name = take_info->mImportName.Buffer();
 			}
 			else
 			{
@@ -599,7 +602,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 			float duration = end > start ? end - start : 1.0f;
 
-			StaticString<MAX_PATH_LENGTH> tmp(output_dir, "out.ani"); // TODO filename
+			StaticString<MAX_PATH_LENGTH> tmp(output_dir, name, ".ani"); // TODO filename
 			IAllocator& allocator = app.getWorldEditor()->getAllocator();
 			if (!out_file.open(tmp, FS::Mode::CREATE_AND_WRITE, allocator))
 			{

@@ -206,6 +206,9 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
+	static Vec3 toLumixVec3(const FbxVector4& v) { return{ (float)v.mData[0], (float)v.mData[1], (float)v.mData[2] }; }
+
+
 	static Matrix toLumix(const FbxAMatrix& mtx)
 	{
 		Matrix res;
@@ -459,6 +462,59 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
+	struct TranslationKey
+	{
+		Vec3 pos;
+		float time;
+		u16 frame;
+	};
+
+
+	static void compressPositions(Array<TranslationKey>& out,
+		int frames,
+		float sample_period,
+		FbxAnimEvaluator* eval,
+		FbxNode* bone,
+		float error)
+	// Array<aiVectorKey>& pos, const aiNodeAnim* channel, float end_time, float error)
+	{
+		out.clear();
+		if (frames == 0) return;
+
+		Vec3 pos = toLumixVec3(eval->GetNodeLocalTranslation(bone, FbxTimeSeconds(0)));
+		TranslationKey last_written = {pos, 0, 0};
+		out.push(last_written);
+		if (frames == 1) return;
+
+		float dt = sample_period;
+		pos = toLumixVec3(eval->GetNodeLocalTranslation(bone, FbxTimeSeconds(sample_period)));
+		Vec3 dif = (pos - last_written.pos) / sample_period;
+		TranslationKey prev = {pos, sample_period, 1};
+		for (u16 i = 2; i < (u16)frames; ++i)
+		{
+			float t = i * sample_period;
+			Vec3 cur = toLumixVec3(eval->GetNodeLocalTranslation(bone, FbxTimeSeconds(t)));
+			dt = t - last_written.time;
+			Vec3 estimate = last_written.pos + dif * dt;
+			if (fabs(estimate.x - cur.x) > error
+				|| fabs(estimate.y - cur.y) > error
+				|| fabs(estimate.z - cur.z) > error)
+			{
+				last_written = prev;
+				out.push(last_written);
+
+				dt = sample_period;
+				dif = (cur - last_written.pos) / dt;
+			}
+			prev = {cur, t, i};
+		}
+
+		float t = frames * sample_period;
+		last_written = { toLumixVec3(eval->GetNodeLocalTranslation(bone, FbxTimeSeconds(t))), t, (u16)frames};
+		out.push(last_written);
+	}
+
+
 	void writeAnimations(FbxScene* scene, FbxNode** bones, int bone_count)
 	{
 		int anim_count = scene->GetSrcObjectCount<FbxAnimStack>();
@@ -518,6 +574,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 				if (curve) ++used_bone_count;
 			}
 			write(used_bone_count);
+			Array<TranslationKey> positions(allocator);
 			for (int j = 0; j < bone_count; ++j)
 			{
 				FbxNode* bone = bones[j];
@@ -530,17 +587,15 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 				write(name_hash);
 				int frames = int((duration / sampling_period) + 0.5f);
 
-				write(frames);
+				compressPositions(positions, frames, sampling_period, eval, bone, 0.001f);
+				write(positions.size());
 
-				for (u16 f = 0; f < frames; ++f) write(f);
-				for (u16 f = 0; f < frames; ++f)
+				for (TranslationKey& key : positions) write(key.frame);
+				for (TranslationKey& key : positions)
 				{
-					float t = f * sampling_period;
-					FbxAMatrix mtx = eval->GetNodeLocalTransform(bone, FbxTimeSeconds(t));
-					auto scale = mtx.GetS().mData[0];
 					// TODO check this in isValid function
 					// assert(scale > 0.99f && scale < 1.01f);
-					for (int i = 0; i < 3; ++i) write((float)mtx.GetT().mData[i] * mesh_scale);
+					write(key.pos * mesh_scale);
 				}
 				write(frames);
 				for (u16 f = 0; f < frames; ++f) write(f);
@@ -646,6 +701,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 					v.py = (float)cp.mData[1] * mesh_scale;
 					v.pz = (float)cp.mData[2] * mesh_scale;
 
+					// TODO correct normal
 					FbxVector4 normal;
 					mesh->GetPolygonVertexNormal(i, j, normal);
 

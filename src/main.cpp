@@ -43,7 +43,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	#pragma pack(1)
 	struct Vertex
 	{
-		float px, py, pz;
+		Vec3 pos;
 		u32 normal;
 		float u, v;
 		i16 indices[4];
@@ -113,11 +113,6 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	{
 		if (!mesh) return FbxAMatrix();
 
-		const FbxAMatrix geometry_matrix(
-			mesh->GetNode()->GetGeometricTranslation(FbxNode::eSourcePivot),
-			mesh->GetNode()->GetGeometricRotation(FbxNode::eSourcePivot),
-			mesh->GetNode()->GetGeometricScaling(FbxNode::eSourcePivot));
-
 		FbxDeformer* deformer = mesh->GetDeformer(0, FbxDeformer::EDeformerType::eSkin);
 		auto* skin = static_cast<FbxSkin*>(deformer);
 
@@ -132,23 +127,9 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			}
 		}
 
-		FbxAMatrix transform_matrix;
-		cluster->GetTransformMatrix(transform_matrix);
-		transform_matrix *= geometry_matrix;
-
 		FbxAMatrix transform_link_matrix;
 		cluster->GetTransformLinkMatrix(transform_link_matrix);
-
-		const FbxAMatrix inverse_bind_pose =
-			transform_link_matrix.Inverse() /** transform_matrix*/;
-
-		auto scale = transform_link_matrix.GetS().mData[0];
-		// TODO check this in isValid function
-		// assert(scale > 0.99 && scale < 1.01);
-
-		const FbxAMatrix bind_pose = inverse_bind_pose.Inverse();
-
-		return bind_pose;
+		return transform_link_matrix;
 	}
 
 
@@ -665,6 +646,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
+	// TODO mesh is 4times the size of assimp
 	void writeGeometry(FbxNode** bones)
 	{
 		IAllocator& allocator = app.getWorldEditor()->getAllocator();
@@ -732,6 +714,16 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 			auto* cluster = skin->GetCluster(0);
 			u16 index = 0;
+			FbxAMatrix geometry_matrix(
+				mesh->GetNode()->GetGeometricTranslation(FbxNode::eSourcePivot),
+				mesh->GetNode()->GetGeometricRotation(FbxNode::eSourcePivot),
+				mesh->GetNode()->GetGeometricScaling(FbxNode::eSourcePivot));
+			FbxAMatrix transform_matrix;
+			cluster->GetTransformMatrix(transform_matrix);
+			transform_matrix *= geometry_matrix;
+			FbxStringList uv_set_name_list;
+			mesh->GetUVSetNames(uv_set_name_list);
+			const char* uv_set_name = uv_set_name_list.GetStringAt(0);
 			for (int i = 0, c = mesh->GetPolygonCount(); i < c; ++i)
 			{
 				for (int j = 0; j < mesh->GetPolygonSize(i); ++j)
@@ -740,20 +732,10 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 					++index;
 					int vertex_index = mesh->GetPolygonVertex(i, j);
 					Skin skin = skinning[vertex_index];
-					Vertex v;
+					Vertex& v = vertices.emplace();
 					FbxVector4 cp = mesh->GetControlPointAt(vertex_index);
-					FbxAMatrix transform_matrix;
-					FbxAMatrix geometry_matrix(
-						mesh->GetNode()->GetGeometricTranslation(FbxNode::eSourcePivot),
-						mesh->GetNode()->GetGeometricRotation(FbxNode::eSourcePivot),
-						mesh->GetNode()->GetGeometricScaling(FbxNode::eSourcePivot));
-					cluster->GetTransformMatrix(transform_matrix);
-					transform_matrix *= geometry_matrix;
-					// premultiply control points here, so we can constantly-scaled meshes without scale in bones
-					cp = transform_matrix.MultT(cp);
-					v.px = (float)cp.mData[0] * mesh_scale;
-					v.py = (float)cp.mData[1] * mesh_scale;
-					v.pz = (float)cp.mData[2] * mesh_scale;
+					// premultiply control points here, so we can have constantly-scaled meshes without scale in bones
+					v.pos = toLumixVec3(transform_matrix.MultT(cp)) * mesh_scale;
 
 					// TODO correct normal
 					FbxVector4 normal;
@@ -762,14 +744,11 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 					v.normal = packF4u(normal);
 					bool unmapped;
 					FbxVector2 uv;
-					FbxStringList uv_set_name_list;
-					mesh->GetUVSetNames(uv_set_name_list);
-					mesh->GetPolygonVertexUV(i, j, uv_set_name_list.GetStringAt(0), uv, unmapped);
+					mesh->GetPolygonVertexUV(i, j, uv_set_name, uv, unmapped);
 					v.u = (float)uv.mData[0];
 					v.v = 1 - (float)uv.mData[1];
 					memcpy(v.indices, skin.joints, sizeof(v.indices));
 					memcpy(v.weights, skin.weights, sizeof(v.weights));
-					vertices.push(v);
 				}
 			}
 		}

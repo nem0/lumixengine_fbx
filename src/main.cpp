@@ -207,7 +207,10 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 
 	static Vec3 toLumixVec3(const FbxVector4& v) { return{ (float)v.mData[0], (float)v.mData[1], (float)v.mData[2] }; }
-
+	static Quat toLumix(const FbxQuaternion& q)
+	{
+		return {(float)q.mData[0], (float)q.mData[1], (float)q.mData[2], (float)q.mData[3]};
+	}
 
 	static Matrix toLumix(const FbxAMatrix& mtx)
 	{
@@ -476,24 +479,23 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		FbxAnimEvaluator* eval,
 		FbxNode* bone,
 		float error)
-	// Array<aiVectorKey>& pos, const aiNodeAnim* channel, float end_time, float error)
 	{
 		out.clear();
 		if (frames == 0) return;
 
-		Vec3 pos = toLumixVec3(eval->GetNodeLocalTranslation(bone, FbxTimeSeconds(0)));
+		Vec3 pos = toLumixVec3(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(0)).GetT());
 		TranslationKey last_written = {pos, 0, 0};
 		out.push(last_written);
 		if (frames == 1) return;
 
 		float dt = sample_period;
-		pos = toLumixVec3(eval->GetNodeLocalTranslation(bone, FbxTimeSeconds(sample_period)));
+		pos = toLumixVec3(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(sample_period)).GetT());
 		Vec3 dif = (pos - last_written.pos) / sample_period;
 		TranslationKey prev = {pos, sample_period, 1};
 		for (u16 i = 2; i < (u16)frames; ++i)
 		{
 			float t = i * sample_period;
-			Vec3 cur = toLumixVec3(eval->GetNodeLocalTranslation(bone, FbxTimeSeconds(t)));
+			Vec3 cur = toLumixVec3(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(t)).GetT());
 			dt = t - last_written.time;
 			Vec3 estimate = last_written.pos + dif * dt;
 			if (fabs(estimate.x - cur.x) > error
@@ -510,7 +512,57 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		}
 
 		float t = frames * sample_period;
-		last_written = { toLumixVec3(eval->GetNodeLocalTranslation(bone, FbxTimeSeconds(t))), t, (u16)frames};
+		last_written = { toLumixVec3(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(t)).GetT()), t, (u16)frames};
+		out.push(last_written);
+	}
+
+
+	struct RotationKey
+	{
+		Quat rot;
+		float time;
+		u16 frame;
+	};
+
+
+	static void compressRotations(Array<RotationKey>& out,
+		int frames,
+		float sample_period,
+		FbxAnimEvaluator* eval,
+		FbxNode* bone,
+		float error)
+	{
+		out.clear();
+		if (frames == 0) return;
+
+		Quat rot = toLumix(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(0)).GetQ());
+		RotationKey last_written = {rot, 0, 0};
+		out.push(last_written);
+		if (frames == 1) return;
+
+		float dt = sample_period;
+		rot = toLumix(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(sample_period)).GetQ());
+		RotationKey after_last = {rot, sample_period, 1};
+		RotationKey prev = after_last;
+		for (u16 i = 2; i < (u16)frames; ++i)
+		{
+			float t = i * sample_period;
+			Quat cur = toLumix(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(t)).GetQ());
+			Quat estimate;
+			nlerp(cur, last_written.rot, &estimate, sample_period / (t - last_written.time));
+			if (fabs(estimate.x - after_last.rot.x) > error || fabs(estimate.y - after_last.rot.y) > error ||
+				fabs(estimate.z - after_last.rot.z) > error)
+			{
+				last_written = prev;
+				out.push(last_written);
+
+				after_last = {cur, t, i};
+			}
+			prev = {cur, t, i};
+		}
+
+		float t = frames * sample_period;
+		last_written = { toLumix(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(t)).GetQ()), t, (u16)frames };
 		out.push(last_written);
 	}
 
@@ -575,6 +627,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			}
 			write(used_bone_count);
 			Array<TranslationKey> positions(allocator);
+			Array<RotationKey> rotations(allocator);
 			for (int j = 0; j < bone_count; ++j)
 			{
 				FbxNode* bone = bones[j];
@@ -597,14 +650,12 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 					// assert(scale > 0.99f && scale < 1.01f);
 					write(key.pos * mesh_scale);
 				}
-				write(frames);
-				for (u16 f = 0; f < frames; ++f) write(f);
-				for (u16 f = 0; f < frames; ++f)
-				{
-					float t = f * sampling_period;
-					FbxAMatrix mtx = eval->GetNodeLocalTransform(bone, FbxTimeSeconds(t));
-					for (double d : mtx.GetQ().mData) write((float)d);
-				}
+
+				compressRotations(rotations, frames, sampling_period, eval, bone, 0.0001f);
+
+				write(rotations.size());
+				for (RotationKey& key : rotations) write(key.frame);
+				for (RotationKey& key : rotations) write(key.rot);
 			}
 			out_file.close();
 		}

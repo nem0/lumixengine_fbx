@@ -28,5 +28,6 @@
 *.out
 *.app
 
+tmp/
 projects/tmp
 !projects/genie.exe

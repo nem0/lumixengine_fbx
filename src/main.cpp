@@ -25,6 +25,13 @@ LUMIX_PLUGIN_ENTRY(lumixengine_fbx)
 
 struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 {
+	struct ImportAnimation
+	{
+		FbxAnimStack* fbx = nullptr;
+		StaticString<MAX_PATH_LENGTH> output_filename;
+		bool import = true;
+	};
+
 	struct ImportMaterial
 	{
 		FbxSurfaceMaterial* fbx = nullptr;
@@ -75,18 +82,6 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		const u8 zz = u8(vec.mData[2] * 127.0f + 128.0f);
 		const u8 ww = u8(0);
 		return packuint32(xx, yy, zz, ww);
-	}
-
-	template <typename T> static int indexOf(const T* const* array, const T* obj)
-	{
-		int i = 0;
-		const T* const* iter = array;
-		while (*iter != obj)
-		{
-			++i;
-			++iter;
-		}
-		return i;
 	}
 
 
@@ -147,7 +142,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
-	static void gatherBones(FbxNode* node, Array<FbxNode*>& bones)
+	void gatherBones(FbxNode* node)
 	{
 		bool is_bone = node->GetNodeAttribute() && node->GetNodeAttribute()->GetAttributeType() == FbxNodeAttribute::EType::eSkeleton;
 		// TODO use is_bone
@@ -156,7 +151,20 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		int count = 1;
 		for (int i = 0; i < node->GetChildCount(); ++i)
 		{
-			gatherBones(node->GetChild(i), bones);
+			gatherBones(node->GetChild(i));
+		}
+	}
+
+
+	void gatherAnimations(FbxScene* scene)
+	{
+		int anim_count = scene->GetSrcObjectCount<FbxAnimStack>();
+		for (int i = 0; i < anim_count; ++i)
+		{
+			ImportAnimation& anim = animations.emplace();
+			anim.fbx = scene->GetSrcObject<FbxAnimStack>(i);
+			anim.import = true;
+			anim.output_filename = anim.fbx->GetName();
 		}
 	}
 
@@ -177,6 +185,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	{
 		// TODO call this function
 		// TODO error message
+		// TODO check is there are not the same bones in multiple scenes
 		for (int i = 0; i < mesh_count; ++i)
 		{
 			FbxMesh* mesh = meshes[i];
@@ -226,6 +235,8 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		, scenes(_app.getWorldEditor()->getAllocator())
 		, materials(_app.getWorldEditor()->getAllocator())
 		, meshes(_app.getWorldEditor()->getAllocator())
+		, animations(_app.getWorldEditor()->getAllocator())
+		, bones(_app.getWorldEditor()->getAllocator())
 	{
 		Action* action = LUMIX_NEW(app.getWorldEditor()->getAllocator(), Action)("Import FBX", "import_fbx");
 		action->func.bind<ImportFBXPlugin, &ImportFBXPlugin::toggleOpened>(this);
@@ -259,6 +270,39 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
+	static int LUA_setMeshParams(lua_State* L)
+	{
+		auto* dlg = LuaWrapper::checkArg<ImportFBXPlugin*>(L, 1);
+		int mesh_idx = LuaWrapper::checkArg<int>(L, 2);
+		LuaWrapper::checkTableArg(L, 3);
+		if (mesh_idx < 0 || mesh_idx >= dlg->meshes.size()) return 0;
+
+		ImportMesh& mesh = dlg->meshes[mesh_idx];
+
+		lua_pushvalue(L, 3);
+
+		if (lua_getfield(L, -1, "import") == LUA_TBOOLEAN)
+		{
+			mesh.import = LuaWrapper::toType<bool>(L, -1);
+		}
+		lua_pop(L, 1); // "import"
+
+		if (lua_getfield(L, -1, "import_physics") == LUA_TBOOLEAN)
+		{
+			mesh.import_physics = LuaWrapper::toType<bool>(L, -1);
+		}
+		lua_pop(L, 1); // "import_physics"
+
+		if (lua_getfield(L, -1, "lod") == LUA_TNUMBER)
+		{
+			mesh.lod = LuaWrapper::toType<int>(L, -1);
+		}
+		lua_pop(L, 1); // "lod"
+
+		lua_pop(L, 1); // table
+		return 0;
+	}
+
 
 	static int LUA_setMaterialParams(lua_State* L)
 	{
@@ -287,11 +331,9 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		return 0;
 	}
 
-	
-	int getMaterialsCount()
-	{
-		return materials.size();
-	}
+
+	int getMaterialsCount() { return materials.size(); }
+	int getMeshesCount() { return meshes.size(); }
 
 
 	void registerLuaAPI()
@@ -311,6 +353,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		REGISTER_FUNCTION(clearSources);
 		REGISTER_FUNCTION(import);
 		REGISTER_FUNCTION(getMaterialsCount);
+		REGISTER_FUNCTION(getMeshesCount);
 
 		#undef REGISTER_FUNCTION
 
@@ -321,6 +364,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 		REGISTER_FUNCTION(setParams);
 		REGISTER_FUNCTION(setMaterialParams);
+		REGISTER_FUNCTION(setMeshParams);
 
 		#undef REGISTER_FUNCTION
 	}
@@ -349,9 +393,12 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		{
 			PathUtils::getBasename(output_mesh_filename.data, lengthOf(output_mesh_filename.data), filename);
 		}
+
 		FbxNode* root = scene->GetRootNode();
 		gatherMaterials(root);
 		gatherMeshes(root);
+		gatherBones(root);
+		gatherAnimations(scene);
 
 		scenes.push(scene);
 		importer->Destroy();
@@ -378,66 +425,45 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
-	void writeMaterials(ImportMaterial* materials, int count)
+	void writeMaterials()
 	{
-		for (int i = 0; i < count; ++i)
+		for (const ImportMaterial& material : materials)
 		{
-			const ImportMaterial& material = materials[i];
 			if (!material.import) continue;
 
 			StaticString<MAX_PATH_LENGTH> path(output_dir, material.fbx->GetName(), ".mat");
 			IAllocator& allocator = app.getWorldEditor()->getAllocator();
 			if (!out_file.open(path, FS::Mode::CREATE_AND_WRITE, allocator))
 			{
-				// TODO error message
+				g_log_error.log("FBX") << "Failed to create " << path;
 				continue;
 			}
 
 			writeString("{\n\t\"shader\" : \"pipelines/rigid/rigid.shd\"");
 
+			auto writeTexture = [this](FbxFileTexture* texture) {
+				if (texture)
+				{
+					writeString(",\n\t\"texture\" : { \"source\" : \"");
+					PathUtils::FileInfo info(texture->GetFileName());
+					writeString(info.m_basename);
+					writeString(".");
+					writeString(info.m_extension);
+					writeString("\" } ");
+				}
+				else
+				{
+					writeString(",\n\t\"texture\" : { \"source\" : \"\" }");
+				}
+			};
+
 			FbxProperty diffuse = material.fbx->FindProperty(FbxSurfaceMaterial::sDiffuse);
 			FbxFileTexture* texture = diffuse.GetSrcObject<FbxFileTexture>();
-
-			if (texture)
-			{
-				writeString(",\n\t\"texture\" : { \"source\" : \"");
-				PathUtils::FileInfo info(texture->GetFileName());
-				writeString(info.m_basename);
-				writeString(".");
-				writeString(info.m_extension);
-				writeString("\" } ");
-			}
-			else
-			{
-				writeString(",\n\t\"texture\" : { \"source\" : \"\" }");
-			}
+			writeTexture(texture);
 
 			FbxProperty normal = material.fbx->FindProperty(FbxSurfaceMaterial::sNormalMap);
 			texture = diffuse.GetSrcObject<FbxFileTexture>();
-
-			if (texture)
-			{
-				writeString(",\n\t\"texture\" : { \"source\" : \"");
-				PathUtils::FileInfo info(texture->GetFileName());
-				writeString(info.m_basename);
-				writeString(".");
-				writeString(info.m_extension);
-				writeString("\" } ");
-			}
-			else
-			{
-				writeString(",\n\t\"texture\" : { \"source\" : \"\" }");
-			}
-
-
-			if (material.fbx->GetClassId().Is(FbxSurfacePhong::ClassId))
-			{
-				FbxSurfacePhong* phong = (FbxSurfacePhong*)material.fbx;
-			}
-			else if (material.fbx->GetClassId().Is(FbxSurfaceLambert::ClassId))
-			{
-				FbxSurfaceLambert* lambert = (FbxSurfaceLambert*)material.fbx;
-			}
+			writeTexture(texture);
 
 			writeString("}");
 
@@ -548,23 +574,26 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
-	void writeAnimations(FbxScene* scene, FbxNode** bones, int bone_count)
+	void writeAnimations()
 	{
-		int anim_count = scene->GetSrcObjectCount<FbxAnimStack>();
-		for (int i = 0; i < anim_count; ++i)
+		for (ImportAnimation& anim : animations)
 		{
-			FbxAnimStack* stack = scene->GetSrcObject<FbxAnimStack>(i);
+			if (!anim.import) continue;
+
+			FbxAnimStack* stack = anim.fbx;
+			FbxScene* scene = stack->GetScene();
 			scene->SetCurrentAnimationStack(stack);
 			const char* anim_name = stack->GetName();
 
 			FbxTimeSpan time_spawn;
 			const FbxTakeInfo* take_info = scene->GetTakeInfo(stack->GetName());
-			StaticString<64> name("anim", i);
+			StaticString<64> name;
 			if (take_info)
 			{
 				time_spawn = take_info->mLocalTimeSpan;
 				if (!take_info->mName.IsEmpty()) name = take_info->mName.Buffer();
 				if (name.data[0] == 0 && !take_info->mImportName.IsEmpty()) name = take_info->mImportName.Buffer();
+				if (name.data[0] == 0) name << "anim";
 			}
 			else
 			{
@@ -587,7 +616,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			IAllocator& allocator = app.getWorldEditor()->getAllocator();
 			if (!out_file.open(tmp, FS::Mode::CREATE_AND_WRITE, allocator))
 			{
-				// TODO error message
+				g_log_error.log("FBX") << "Failed to create " << tmp;
 				continue;
 			}
 			Animation::Header header;
@@ -601,9 +630,10 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			write(int(duration / sampling_period));
 			int used_bone_count = 0;
 
-			for (int j = 0; j < bone_count; ++j)
+			for (FbxNode* bone : bones)
 			{
-				FbxNode* bone = bones[j];
+				if (bone->GetScene() != scene) continue;
+				
 				FbxAnimEvaluator* eval = scene->GetAnimationEvaluator();
 				FbxAnimLayer* layer = stack->GetMember<FbxAnimLayer>();
 				FbxAnimCurveNode* curve = bone->LclTranslation.GetCurveNode(layer);
@@ -612,13 +642,15 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			write(used_bone_count);
 			Array<TranslationKey> positions(allocator);
 			Array<RotationKey> rotations(allocator);
-			for (int j = 0; j < bone_count; ++j)
+			for (FbxNode* bone : bones)
 			{
-				FbxNode* bone = bones[j];
+				if (bone->GetScene() != scene) continue;
+
 				FbxAnimEvaluator* eval = scene->GetAnimationEvaluator();
 				FbxAnimLayer* layer = stack->GetMember<FbxAnimLayer>();
 				FbxAnimCurveNode* curve = bone->LclTranslation.GetCurveNode(layer);
 				if (!curve) continue;
+				
 				const char* bone_name = bone->GetName();
 				u32 name_hash = crc32(bone_name, (int)strlen(bone_name));
 				write(name_hash);
@@ -647,7 +679,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 
 	// TODO mesh is 4times the size of assimp
-	void writeGeometry(FbxNode** bones)
+	void writeGeometry()
 	{
 		IAllocator& allocator = app.getWorldEditor()->getAllocator();
 		Array<Vertex> vertices(allocator);
@@ -678,7 +710,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			for (int i = 0; i < skin->GetClusterCount(); ++i)
 			{
 				FbxCluster* cluster = skin->GetCluster(i);
-				int joint = indexOf(bones, cluster->GetLink());
+				int joint = bones.indexOf(cluster->GetLink());
 				const int* cp_indices = cluster->GetControlPointIndices();
 				const double* weights = cluster->GetControlPointWeights();
 				for (int j = 0; j < cluster->GetControlPointIndicesCount(); ++j)
@@ -797,14 +829,12 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
-	void writeSkeleton(FbxNode** bones, int bone_count)
+	void writeSkeleton()
 	{
-		write(bone_count);
+		write(bones.size());
 
-		for (int i = 0; i < bone_count; ++i)
+		for (FbxNode* node : bones)
 		{
-			FbxNode* node = bones[i];
-
 			const char* name = node->GetName();
 			int len = (int)strlen(name);
 			write(len);
@@ -837,11 +867,33 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	void writeLODs()
 	{
 		i32 lod_count = 1;
-		write(lod_count);
-		i32 to_mesh = meshes.size() - 1;
-		write(to_mesh);
-		float lod = FLT_MAX;
-		write(lod);
+		i32 last_mesh_idx = -1;
+		i32 lods[8] = {};
+		for (auto& mesh : meshes)
+		{
+			if (!mesh.import) continue;
+
+			++last_mesh_idx;
+			if (mesh.lod >= lengthOf(lods_distances)) continue;
+			lod_count = mesh.lod + 1;
+			lods[mesh.lod] = last_mesh_idx;
+		}
+
+		for (int i = 1; i < Lumix::lengthOf(lods); ++i)
+		{
+			if (lods[i] < lods[i - 1]) lods[i] = lods[i - 1];
+		}
+
+		write((const char*)&lod_count, sizeof(lod_count));
+
+		for (int i = 0; i < lod_count; ++i)
+		{
+			i32 to_mesh = lods[i];
+			write((const char*)&to_mesh, sizeof(to_mesh));
+			float factor = lods_distances[i] < 0 ? FLT_MAX : lods_distances[i] * lods_distances[i];
+			write((const char*)&factor, sizeof(factor));
+		}
+	
 	}
 
 
@@ -872,34 +924,46 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 	bool import()
 	{
+		if (!endsWith(output_dir.data, "/") && !endsWith(output_dir.data, "\\"))
+		{
+			output_dir << "/";
+		}
+
+		writeModel();
+		writeAnimations();
+		writeMaterials();
+
+		return true;
+	}
+
+
+	void writeModel()
+	{
+		auto cmpMeshes = [](const void* a, const void* b) -> int {
+			auto a_mesh = static_cast<const ImportMesh*>(a);
+			auto b_mesh = static_cast<const ImportMesh*>(b);
+			return a_mesh->lod - b_mesh->lod;
+		};
+
+		bool import_any_mesh = false;
+		for (const ImportMesh& m : meshes) if (m.import) import_any_mesh = true;
+		if (!import_any_mesh) return;
+
+		qsort(&meshes[0], meshes.size(), sizeof(meshes[0]), cmpMeshes);
 		StaticString<MAX_PATH_LENGTH> out_path(output_dir, output_mesh_filename, ".msh");
+		PlatformInterface::makePath(output_dir);
 		if (!out_file.open(out_path, FS::Mode::CREATE_AND_WRITE, app.getWorldEditor()->getAllocator()))
 		{
-			error_message << "Failed to create " << out_path;
-			return false;
-		}
-		
-		IAllocator& allocator = app.getWorldEditor()->getAllocator();
-		Array<FbxNode*> bones(allocator);
-		for (FbxScene* scene : scenes)
-		{
-			FbxNode* root = scene->GetRootNode();
-			gatherBones(root, bones);
+			g_log_error.log("FBX") << "Failed to create " << out_path;
+			return;
 		}
 
 		writeModelHeader();
 		writeMeshes();
-		writeGeometry(&bones[0]);
-		writeSkeleton(&bones[0], (int)bones.size());
+		writeGeometry();
+		writeSkeleton();
 		writeLODs();
 		out_file.close();
-
-		ASSERT(scenes.size() == 1); // only 1 scene supported ATM
-		writeAnimations(scenes[0], &bones[0], bones.size());
-
-		writeMaterials(&materials[0], materials.size());
-
-		return true;
 	}
 
 
@@ -908,6 +972,8 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		for (FbxScene* scene : scenes) scene->Destroy();
 		scenes.clear();
 		materials.clear();
+		animations.clear();
+		bones.clear();
 	}
 
 
@@ -919,6 +985,52 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 	void toggleOpened() { opened = !opened; }
 	bool isOpened() const { return opened; }
+
+
+	void onAnimationsGUI()
+	{
+		StaticString<30> label("Animations (");
+		label << animations.size() << ")###Animations";
+		if (!ImGui::CollapsingHeader(label)) return;
+
+		/*ImGui::DragFloat("Time scale", &m_model.time_scale, 1.0f, 0, FLT_MAX, "%.5f");
+		ImGui::DragFloat("Max position error", &m_model.position_error, 0, FLT_MAX);
+		ImGui::DragFloat("Max rotation error", &m_model.rotation_error, 0, FLT_MAX);
+*/
+		ImGui::Indent();
+		ImGui::Columns(3);
+
+		ImGui::Text("Name");
+		ImGui::NextColumn();
+		ImGui::Text("Import");
+		ImGui::NextColumn();
+		ImGui::Text("Root motion bone");
+		ImGui::NextColumn();
+		ImGui::Separator();
+
+		ImGui::PushID("anims");
+		for (int i = 0; i < animations.size(); ++i)
+		{
+			ImportAnimation& animation = animations[i];
+			ImGui::PushID(i);
+			ImGui::InputText("", animation.output_filename.data, lengthOf(animation.output_filename.data));
+			ImGui::NextColumn();
+			ImGui::Checkbox("", &animation.import);
+			ImGui::NextColumn();
+			/*auto getter = [](void* data, int idx, const char** out) -> bool {
+				auto* animation = (ImportAnimation*)data;
+				*out = animation->animation->mChannels[idx]->mNodeName.C_Str();
+				return true;
+			};
+			ImGui::Combo("##rb", &animation.root_motion_bone_idx, getter, &animation, animation.animation->mNumChannels);*/
+			ImGui::NextColumn();
+			ImGui::PopID();
+		}
+
+		ImGui::PopID();
+		ImGui::Columns();
+		ImGui::Unindent();
+	}
 
 
 	void onMeshesGUI()
@@ -952,11 +1064,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			ImGui::Text("%s", name);
 			ImGui::NextColumn();
 
-			// TODO
-			/*auto* material = mesh.scene->mMaterials[mesh.mesh->mMaterialIndex];
-			aiString material_name;
-			material->Get(AI_MATKEY_NAME, material_name);
-			ImGui::Text("%s", material_name.C_Str());*/
+			ImGui::Text("%s", material ? material->GetName() : "N/A");
 			ImGui::NextColumn();
 
 			ImGui::Checkbox(StaticString<30>("###mesh", (u64)&mesh), &mesh.import);
@@ -1082,6 +1190,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 				
 				onMeshesGUI();
 				onMaterialsGUI();
+				onAnimationsGUI();
 
 				ImGui::InputFloat("Scale", &mesh_scale);
 				ImGui::InputText("Output directory", output_dir.data, sizeof(output_dir));
@@ -1109,11 +1218,14 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	FbxManager* fbx_manager = nullptr;
 	Array<ImportMaterial> materials;
 	Array<ImportMesh> meshes;
+	Array<ImportAnimation> animations;
+	Array<FbxNode*> bones;
 	StaticString<1024> error_message;
 	StaticString<MAX_PATH_LENGTH> output_dir;
 	StaticString<MAX_PATH_LENGTH> last_dir;
 	StaticString<MAX_PATH_LENGTH> output_mesh_filename;
 	Array<FbxScene*> scenes;
+	float lods_distances[4] = {-10, -100, -1000, -10000};
 	FS::OsFile out_file;
 	float mesh_scale = 1.0f;
 };

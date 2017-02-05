@@ -1,8 +1,10 @@
 function linkFBX()
+
 	configuration {"Debug"}
+		libdirs { "../src"}
 		libdirs { "C:\\Program Files\\Autodesk\\FBX\\FBX SDK\\2017.1\\lib\\vs2015\\x64\\debug"}
 	
-	configuration {"Release", "RelWithDebInfo"}
+	configuration {"Release or RelWithDebInfo"}
 		libdirs { "C:\\Program Files\\Autodesk\\FBX\\FBX SDK\\2017.1\\lib\\vs2015\\x64\\release"}
 	
 	configuration {}
@@ -10,6 +12,8 @@ function linkFBX()
 	includedirs { "../../luxmiengine_fbx/src", "C:\\Program Files\\Autodesk\\FBX\\FBX SDK\\2017.1\\include", }
 	links { "libfbxsdk" }
 	defines {"FBXSDK_SHARED"}
+	
+	configuration {}
 end
 
 project "lumixengine_fbx"

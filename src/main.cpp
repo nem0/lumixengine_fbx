@@ -3,6 +3,7 @@
 #include "editor/studio_app.h"
 #include "editor/utils.h"
 #include "editor/world_editor.h"
+#include "engine/blob.h"
 #include "engine/crc32.h"
 #include "engine/fs/os_file.h"
 #include "engine/iplugin.h"
@@ -186,6 +187,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		// TODO call this function
 		// TODO error message
 		// TODO check is there are not the same bones in multiple scenes
+		// TODO check if all meshes have the same vertex decls
 		for (int i = 0; i < mesh_count; ++i)
 		{
 			FbxMesh* mesh = meshes[i];
@@ -612,7 +614,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 			float duration = end > start ? end - start : 1.0f;
 
-			StaticString<MAX_PATH_LENGTH> tmp(output_dir, name, ".ani"); // TODO filename
+			StaticString<MAX_PATH_LENGTH> tmp(output_dir, name, ".ani");
 			IAllocator& allocator = app.getWorldEditor()->getAllocator();
 			if (!out_file.open(tmp, FS::Mode::CREATE_AND_WRITE, allocator))
 			{
@@ -678,11 +680,37 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
+	static bool isSkinned(FbxMesh* mesh)
+	{
+		return mesh->GetDeformerCount(FbxDeformer::EDeformerType::eSkin) > 0;
+	}
+
+
+	static int getVertexSize(FbxMesh* mesh)
+	{
+		static const int POSITION_SIZE = sizeof(float) * 3;
+		static const int NORMAL_SIZE = sizeof(u8) * 4;
+		static const int TANGENT_SIZE = sizeof(u8) * 4;
+		static const int UV_SIZE = sizeof(float) * 2;
+		static const int COLOR_SIZE = sizeof(u8) * 4;
+		static const int BONE_INDICES_WEIGHTS_SIZE = sizeof(float) * 4 + sizeof(u16) * 4;
+		int size = POSITION_SIZE + NORMAL_SIZE;
+
+		// TODO
+		//if (mesh->GetElementTangentCount() > 0) size += TANGENT_SIZE;
+		if (mesh->GetElementUVCount() > 0) size += UV_SIZE;
+		// TODO
+		//if (mesh->GetElementVertexColorCount() > 0) size += COLOR_SIZE;
+		if (isSkinned(mesh)) size += BONE_INDICES_WEIGHTS_SIZE;
+
+		return size;
+	}
+
+
 	// TODO mesh is 4times the size of assimp
 	void writeGeometry()
 	{
 		IAllocator& allocator = app.getWorldEditor()->getAllocator();
-		Array<Vertex> vertices(allocator);
 		i32 indices_count = 0;
 
 		for (const ImportMesh& mesh : meshes)
@@ -691,6 +719,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		}
 		write(indices_count);
 	
+		OutputBlob vertices_blob(allocator);
 		for (const ImportMesh& import_mesh : meshes)
 		{
 			if (!import_mesh.import) continue;
@@ -753,9 +782,15 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			FbxAMatrix transform_matrix;
 			cluster->GetTransformMatrix(transform_matrix);
 			transform_matrix *= geometry_matrix;
+			bool is_skinned = isSkinned(mesh);
+			bool has_uvs = mesh->GetElementUVCount() > 0;
 			FbxStringList uv_set_name_list;
-			mesh->GetUVSetNames(uv_set_name_list);
-			const char* uv_set_name = uv_set_name_list.GetStringAt(0);
+			const char* uv_set_name = nullptr;
+			if (has_uvs)
+			{
+				mesh->GetUVSetNames(uv_set_name_list);
+				uv_set_name = uv_set_name_list.GetStringAt(0);
+			}
 			for (int i = 0, c = mesh->GetPolygonCount(); i < c; ++i)
 			{
 				for (int j = 0; j < mesh->GetPolygonSize(i); ++j)
@@ -763,30 +798,36 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 					write(index);
 					++index;
 					int vertex_index = mesh->GetPolygonVertex(i, j);
-					Skin skin = skinning[vertex_index];
-					Vertex& v = vertices.emplace();
 					FbxVector4 cp = mesh->GetControlPointAt(vertex_index);
 					// premultiply control points here, so we can have constantly-scaled meshes without scale in bones
-					v.pos = toLumixVec3(transform_matrix.MultT(cp)) * mesh_scale;
+					Vec3 pos = toLumixVec3(transform_matrix.MultT(cp)) * mesh_scale;
+					vertices_blob.write(pos);
 
 					// TODO correct normal
 					FbxVector4 normal;
 					mesh->GetPolygonVertexNormal(i, j, normal);
 
-					v.normal = packF4u(normal);
-					bool unmapped;
-					FbxVector2 uv;
-					mesh->GetPolygonVertexUV(i, j, uv_set_name, uv, unmapped);
-					v.u = (float)uv.mData[0];
-					v.v = 1 - (float)uv.mData[1];
-					memcpy(v.indices, skin.joints, sizeof(v.indices));
-					memcpy(v.weights, skin.weights, sizeof(v.weights));
+					u32 packed_normal = packF4u(normal);
+					vertices_blob.write(packed_normal);
+					if (has_uvs)
+					{
+						bool unmapped;
+						FbxVector2 uv;
+						mesh->GetPolygonVertexUV(i, j, uv_set_name, uv, unmapped);
+						Vec2 tex_cooords = {(float)uv.mData[0], 1 - (float)uv.mData[1]};
+						vertices_blob.write(tex_cooords);
+					}
+					if (is_skinned)
+					{
+						Skin skin = skinning[vertex_index];
+						vertices_blob.write(skin.joints);
+						vertices_blob.write(skin.weights);
+					}
 				}
 			}
 		}
-		i32 vertices_size = (i32)(sizeof(vertices[0]) * vertices.size());
-		write(vertices_size);
-		write(&vertices[0], vertices_size);
+		write(vertices_blob.getPos());
+		write(vertices_blob.getData(), vertices_blob.getPos());
 	}
 
 
@@ -897,8 +938,22 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
+	static int getAttributeCount(FbxMesh* mesh)
+	{
+		int count = 2; // position, normal
+		if (mesh->GetElementUVCount() > 0) ++count;
+		if (isSkinned(mesh)) count += 2;
+		// TODO
+		//if (mesh->HasVertexColors(0) && m_dialog.m_model.import_vertex_colors) ++count;
+		//if (mesh->GetElementTangentCount() > 0) ++count;
+		return count;
+	}
+
+
+
 	void writeModelHeader()
 	{
+		FbxMesh* mesh = meshes[0].fbx;
 		Model::FileHeader header;
 		header.magic = 0x5f4c4d4f; // == '_LMO';
 		header.version = (u32)Model::FileVersion::LATEST;
@@ -906,19 +961,26 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		u32 flags = (u32)Model::Flags::INDICES_16BIT;
 		write(flags);
 
-		i32 attribute_count = 5;
+
+		i32 attribute_count = getAttributeCount(mesh);
 		write(attribute_count);
 
 		i32 pos_attr = 0;
 		write(pos_attr);
 		i32 nrm_attr = 1;
 		write(nrm_attr);
-		i32 uv0_attr = 8;
-		write(uv0_attr);
-		i32 indices_attr = 6;
-		write(indices_attr);
-		i32 weight_attr = 7;
-		write(weight_attr);
+		if (mesh->GetElementUVCount() > 0)
+		{
+			i32 uv0_attr = 8;
+			write(uv0_attr);
+		}
+		if (isSkinned(mesh))
+		{
+			i32 indices_attr = 6;
+			write(indices_attr);
+			i32 weight_attr = 7;
+			write(weight_attr);
+		}
 	}
 
 

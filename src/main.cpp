@@ -64,11 +64,11 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
-	static u32 packF4u(const FbxVector4& vec)
+	static u32 packF4u(const Vec3& vec)
 	{
-		const u8 xx = u8(vec.mData[0] * 127.0f + 128.0f);
-		const u8 yy = u8(vec.mData[1] * 127.0f + 128.0f);
-		const u8 zz = u8(vec.mData[2] * 127.0f + 128.0f);
+		const u8 xx = u8(vec.x * 127.0f + 128.0f);
+		const u8 yy = u8(vec.y * 127.0f + 128.0f);
+		const u8 zz = u8(vec.z * 127.0f + 128.0f);
 		const u8 ww = u8(0);
 		return packuint32(xx, yy, zz, ww);
 	}
@@ -138,14 +138,13 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 		if (is_bone)
 		{
-			bones.push(node);
-
 			FbxNode* parent = node->GetParent();
 			while (parent && bones.indexOf(parent) < 0)
 			{
 				bones.push(parent);
 				parent = parent->GetParent();
 			}
+			bones.push(node);
 		}
 
 		for (int i = 0; i < node->GetChildCount(); ++i)
@@ -173,7 +172,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		int c = scene->GetSrcObjectCount<FbxMesh>();
 		for (int i = 0; i < c; ++i)
 		{
-			meshes.emplace().fbx = scene->GetSrcObject<FbxMesh>();
+			meshes.emplace().fbx = scene->GetSrcObject<FbxMesh>(i);
 		}
 	}
 
@@ -732,7 +731,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			FbxMesh* mesh = import_mesh.fbx;
 			bool is_skinned = isSkinned(mesh);
 
-			FbxAMatrix transform_matrix;
+			Matrix transform_matrix = Matrix::IDENTITY;
 			if (is_skinned)
 			{
 				skinning.resize(mesh->GetControlPointsCount());
@@ -759,7 +758,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 						else
 						{
 							int min = 0;
-							for (int m = 1; m < 4; ++i)
+							for (int m = 1; m < 4; ++m)
 							{
 								if (s.weights[m] < s.weights[min]) min = m;
 							}
@@ -777,12 +776,14 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 				}
 
 				auto* cluster = skin->GetCluster(0);
+				FbxAMatrix mtx;
 				FbxAMatrix geometry_matrix(
 					mesh->GetNode()->GetGeometricTranslation(FbxNode::eSourcePivot),
 					mesh->GetNode()->GetGeometricRotation(FbxNode::eSourcePivot),
 					mesh->GetNode()->GetGeometricScaling(FbxNode::eSourcePivot));
-				cluster->GetTransformMatrix(transform_matrix);
-				transform_matrix *= geometry_matrix;
+				cluster->GetTransformMatrix(mtx);
+				mtx *= geometry_matrix;
+				transform_matrix = toLumix(mtx);
 			}
 			bool has_uvs = mesh->GetElementUVCount() > 0;
 			FbxStringList uv_set_name_list;
@@ -802,12 +803,15 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 					int vertex_index = mesh->GetPolygonVertex(i, j);
 					FbxVector4 cp = mesh->GetControlPointAt(vertex_index);
 					// premultiply control points here, so we can have constantly-scaled meshes without scale in bones
-					Vec3 pos = toLumixVec3(transform_matrix.MultT(cp)) * mesh_scale;
+					Vec3 pos = transform_matrix.transform(toLumixVec3(cp)) * mesh_scale;
 					vertices_blob.write(pos);
 
 					// TODO correct normal
-					FbxVector4 normal;
-					mesh->GetPolygonVertexNormal(i, j, normal);
+					FbxVector4 fbx_normal;
+					mesh->GetPolygonVertexNormal(i, j, fbx_normal);
+					Vec3 normal = toLumixVec3(fbx_normal);
+					normal = transform_matrix * Vec4(normal, 0);
+//					normal.normalize();
 
 					u32 packed_normal = packF4u(normal);
 					vertices_blob.write(packed_normal);

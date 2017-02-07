@@ -1124,7 +1124,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		for (auto& mesh : meshes)
 		{
 			const char* name = mesh.fbx->GetName();
-			FbxSurfaceMaterial* material = mesh.fbx->GetElementMaterial();
+			FbxSurfaceMaterial* material = mesh.fbx->GetNode()->GetMaterial(0);
 			if (name[0] == '\0' && material) name = material->GetName();
 			ImGui::Text("%s", name);
 			ImGui::NextColumn();

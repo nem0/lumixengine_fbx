@@ -43,6 +43,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	struct ImportMesh
 	{
 		FbxMesh* fbx = nullptr;
+		FbxSurfaceMaterial* fbx_mat = nullptr;
 		bool import = true;
 		bool import_physics = false;
 		int lod = 0;
@@ -172,7 +173,15 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		int c = scene->GetSrcObjectCount<FbxMesh>();
 		for (int i = 0; i < c; ++i)
 		{
-			meshes.emplace().fbx = scene->GetSrcObject<FbxMesh>(i);
+			ImportMesh& mesh = meshes.emplace();
+			mesh.fbx = scene->GetSrcObject<FbxMesh>(i);
+			if (mesh.fbx->GetElementMaterialCount() == 0) continue;
+
+			const auto& index_array = mesh.fbx->GetElementMaterial(0)->GetIndexArray();
+			if (index_array.GetCount() == 0) continue;
+
+			FbxNode* node = mesh.fbx->GetNode();
+			mesh.fbx_mat = node->GetMaterial(index_array[0]);
 		}
 	}
 
@@ -851,7 +860,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			if (!import_mesh.import) continue;
 
 			FbxMesh* mesh = import_mesh.fbx;
-			FbxSurfaceMaterial* material = mesh->GetNode()->GetMaterial(0);
+			FbxSurfaceMaterial* material = import_mesh.fbx_mat;
 			const char* mat = material->GetName();
 			i32 mat_len = (i32)strlen(mat);
 			write(mat_len);
@@ -1129,7 +1138,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		for (auto& mesh : meshes)
 		{
 			const char* name = mesh.fbx->GetName();
-			FbxSurfaceMaterial* material = mesh.fbx->GetNode()->GetMaterial(0);
+			FbxSurfaceMaterial* material = mesh.fbx_mat;
 			if (name[0] == '\0' && material) name = material->GetName();
 			ImGui::Text("%s", name);
 			ImGui::NextColumn();

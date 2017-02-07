@@ -708,15 +708,8 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	// TODO mesh is 4times the size of assimp
 	void writeGeometry()
 	{
-		struct Skin
-		{
-			float weights[4];
-			i16 joints[4];
-			int count = 0;
-		};
-		IAllocator& allocator = app.getWorldEditor()->getAllocator();
-		Array<Skin> skinning(allocator);
 		i32 indices_count = 0;
+		IAllocator& allocator = app.getWorldEditor()->getAllocator();
 
 		for (const ImportMesh& mesh : meshes)
 		{
@@ -728,6 +721,14 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		for (const ImportMesh& import_mesh : meshes)
 		{
 			if (!import_mesh.import) continue;
+
+			struct Skin
+			{
+				float weights[4];
+				i16 joints[4];
+				int count = 0;
+			};
+			Array<Skin> skinning(allocator);
 			FbxMesh* mesh = import_mesh.fbx;
 			bool is_skinned = isSkinned(mesh);
 

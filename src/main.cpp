@@ -48,18 +48,6 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		int lod = 0;
 	};
 
-	#pragma pack(1)
-	struct Vertex
-	{
-		Vec3 pos;
-		u32 normal;
-		float u, v;
-		i16 indices[4];
-		float weights[4];
-	};
-	#pragma pack()
-
-
 	static u32 packuint32(u8 _x, u8 _y, u8 _z, u8 _w)
 	{
 		union {
@@ -91,6 +79,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		for (int i = 0; i < meshes.size(); ++i)
 		{
 			FbxMesh* mesh = meshes[i].fbx;
+			if (mesh->GetDeformerCount(FbxDeformer::EDeformerType::eSkin) <= 0) continue;
 			FbxDeformer* deformer = mesh->GetDeformer(0, FbxDeformer::EDeformerType::eSkin);
 			auto* skin = static_cast<FbxSkin*>(deformer);
 			int cluster_count = skin->GetClusterCount();
@@ -146,10 +135,19 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	void gatherBones(FbxNode* node)
 	{
 		bool is_bone = node->GetNodeAttribute() && node->GetNodeAttribute()->GetAttributeType() == FbxNodeAttribute::EType::eSkeleton;
-		// TODO use is_bone
-		bones.push(node);
 
-		int count = 1;
+		if (is_bone)
+		{
+			bones.push(node);
+
+			FbxNode* parent = node->GetParent();
+			while (parent && bones.indexOf(parent) < 0)
+			{
+				bones.push(parent);
+				parent = parent->GetParent();
+			}
+		}
+
 		for (int i = 0; i < node->GetChildCount(); ++i)
 		{
 			gatherBones(node->GetChild(i));
@@ -170,14 +168,12 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
-	void gatherMeshes(FbxNode* node)
+	void gatherMeshes(FbxScene* scene)
 	{
-		FbxMesh* mesh = node->GetMesh();
-		if (mesh) meshes.emplace().fbx = mesh;
-
-		for (int i = 0; i < node->GetChildCount(); ++i)
+		int c = scene->GetSrcObjectCount<FbxMesh>();
+		for (int i = 0; i < c; ++i)
 		{
-			gatherMeshes(node->GetChild(i));
+			meshes.emplace().fbx = scene->GetSrcObject<FbxMesh>();
 		}
 	}
 
@@ -378,7 +374,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 		if (!importer->Initialize(filename, -1, fbx_manager->GetIOSettings()))
 		{
-			error_message << "Failed to initialize fbx importer: " << importer->GetStatus().GetErrorString();
+			g_log_error.log("FBX") << "Failed to initialize fbx importer: " << importer->GetStatus().GetErrorString();
 			importer->Destroy();
 			return false;
 		}
@@ -386,10 +382,13 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		FbxScene* scene = FbxScene::Create(fbx_manager, "myScene");
 		if (!importer->Import(scene))
 		{
-			error_message << "Failed to import \"" << filename << "\": " << importer->GetStatus().GetErrorString();
+			g_log_error.log("FBX") << "Failed to import \"" << filename << "\": " << importer->GetStatus().GetErrorString();
 			importer->Destroy();
 			return false;
 		}
+
+		FbxGeometryConverter converter(fbx_manager);
+		converter.SplitMeshesPerMaterial(scene, true);
 
 		if (scenes.empty())
 		{
@@ -398,7 +397,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 		FbxNode* root = scene->GetRootNode();
 		gatherMaterials(root);
-		gatherMeshes(root);
+		gatherMeshes(scene);
 		gatherBones(root);
 		gatherAnimations(scene);
 
@@ -710,7 +709,14 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	// TODO mesh is 4times the size of assimp
 	void writeGeometry()
 	{
+		struct Skin
+		{
+			float weights[4];
+			i16 joints[4];
+			int count = 0;
+		};
 		IAllocator& allocator = app.getWorldEditor()->getAllocator();
+		Array<Skin> skinning(allocator);
 		i32 indices_count = 0;
 
 		for (const ImportMesh& mesh : meshes)
@@ -724,65 +730,60 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		{
 			if (!import_mesh.import) continue;
 			FbxMesh* mesh = import_mesh.fbx;
+			bool is_skinned = isSkinned(mesh);
 
-			struct Skin
+			FbxAMatrix transform_matrix;
+			if (is_skinned)
 			{
-				float weights[4];
-				i16 joints[4];
-				int count = 0;
-			};
-			Array<Skin> skinning(allocator);
-			skinning.resize(mesh->GetControlPointsCount());
+				skinning.resize(mesh->GetControlPointsCount());
 
-			FbxDeformer* deformer = mesh->GetDeformer(0, FbxDeformer::EDeformerType::eSkin);
-			auto* skin = static_cast<FbxSkin*>(deformer);
-			for (int i = 0; i < skin->GetClusterCount(); ++i)
-			{
-				FbxCluster* cluster = skin->GetCluster(i);
-				int joint = bones.indexOf(cluster->GetLink());
-				const int* cp_indices = cluster->GetControlPointIndices();
-				const double* weights = cluster->GetControlPointWeights();
-				for (int j = 0; j < cluster->GetControlPointIndicesCount(); ++j)
+				FbxDeformer* deformer = mesh->GetDeformer(0, FbxDeformer::EDeformerType::eSkin);
+				auto* skin = static_cast<FbxSkin*>(deformer);
+				for (int i = 0; i < skin->GetClusterCount(); ++i)
 				{
-					int idx = cp_indices[j];
-					float weight = (float)weights[j];
-					Skin& s = skinning[idx];
-					if (s.count < 4)
+					FbxCluster* cluster = skin->GetCluster(i);
+					int joint = bones.indexOf(cluster->GetLink());
+					const int* cp_indices = cluster->GetControlPointIndices();
+					const double* weights = cluster->GetControlPointWeights();
+					for (int j = 0; j < cluster->GetControlPointIndicesCount(); ++j)
 					{
-						s.weights[s.count] = weight;
-						s.joints[s.count] = joint;
-						++s.count;
-					}
-					else
-					{
-						int min = 0;
-						for (int m = 1; m < 4; ++i)
+						int idx = cp_indices[j];
+						float weight = (float)weights[j];
+						Skin& s = skinning[idx];
+						if (s.count < 4)
 						{
-							if (s.weights[m] < s.weights[min]) min = m;
+							s.weights[s.count] = weight;
+							s.joints[s.count] = joint;
+							++s.count;
 						}
-						s.weights[min] = weight;
-						s.joints[min] = joint;
+						else
+						{
+							int min = 0;
+							for (int m = 1; m < 4; ++i)
+							{
+								if (s.weights[m] < s.weights[min]) min = m;
+							}
+							s.weights[min] = weight;
+							s.joints[min] = joint;
+						}
 					}
 				}
-			}
 
-			for (Skin& s : skinning)
-			{
-				float sum = 0;
-				for (float w : s.weights) sum += w;
-				for (float& w : s.weights) w /= sum;
-			}
+				for (Skin& s : skinning)
+				{
+					float sum = 0;
+					for (float w : s.weights) sum += w;
+					for (float& w : s.weights) w /= sum;
+				}
 
-			auto* cluster = skin->GetCluster(0);
-			u16 index = 0;
-			FbxAMatrix geometry_matrix(
-				mesh->GetNode()->GetGeometricTranslation(FbxNode::eSourcePivot),
-				mesh->GetNode()->GetGeometricRotation(FbxNode::eSourcePivot),
-				mesh->GetNode()->GetGeometricScaling(FbxNode::eSourcePivot));
-			FbxAMatrix transform_matrix;
-			cluster->GetTransformMatrix(transform_matrix);
-			transform_matrix *= geometry_matrix;
-			bool is_skinned = isSkinned(mesh);
+				auto* cluster = skin->GetCluster(0);
+				FbxAMatrix geometry_matrix(
+					mesh->GetNode()->GetGeometricTranslation(FbxNode::eSourcePivot),
+					mesh->GetNode()->GetGeometricRotation(FbxNode::eSourcePivot),
+					mesh->GetNode()->GetGeometricScaling(FbxNode::eSourcePivot));
+				cluster->GetTransformMatrix(transform_matrix);
+				transform_matrix *= geometry_matrix;
+			}
 			bool has_uvs = mesh->GetElementUVCount() > 0;
 			FbxStringList uv_set_name_list;
 			const char* uv_set_name = nullptr;
@@ -791,6 +792,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 				mesh->GetUVSetNames(uv_set_name_list);
 				uv_set_name = uv_set_name_list.GetStringAt(0);
 			}
+			u16 index = 0;
 			for (int i = 0, c = mesh->GetPolygonCount(); i < c; ++i)
 			{
 				for (int j = 0; j < mesh->GetPolygonSize(i); ++j)
@@ -851,7 +853,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			write(mat, strlen(mat));
 
 			write(attr_offset);
-			i32 attr_size = sizeof(Vertex) * mesh->GetPolygonCount() * 3;
+			i32 attr_size = getVertexSize(mesh) * mesh->GetPolygonCount() * 3;
 			attr_offset += attr_size;
 			write(attr_size);
 
@@ -860,7 +862,8 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			indices_offset += mesh_tri_count * 3;
 			write(mesh_tri_count);
 
-			const char* name = mesh->GetName();
+			const char* name = mesh->GetNode()->GetName();
+			if (name[0] == 0) mesh->GetName();
 			if (name[0] == 0) name = mat;
 			if (name[0] == 0) "Unknown";
 			i32 name_len = (i32)strlen(name);
@@ -1121,7 +1124,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		for (auto& mesh : meshes)
 		{
 			const char* name = mesh.fbx->GetName();
-			FbxSurfaceMaterial* material = mesh.fbx->GetNode()->GetMaterial(0);
+			FbxSurfaceMaterial* material = mesh.fbx->GetElementMaterial();
 			if (name[0] == '\0' && material) name = material->GetName();
 			ImGui::Text("%s", name);
 			ImGui::NextColumn();
@@ -1282,7 +1285,6 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	Array<ImportMesh> meshes;
 	Array<ImportAnimation> animations;
 	Array<FbxNode*> bones;
-	StaticString<1024> error_message;
 	StaticString<MAX_PATH_LENGTH> output_dir;
 	StaticString<MAX_PATH_LENGTH> last_dir;
 	StaticString<MAX_PATH_LENGTH> output_mesh_filename;

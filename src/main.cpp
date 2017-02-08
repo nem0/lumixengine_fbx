@@ -746,8 +746,12 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 					{
 						if (s.weights[m] < s.weights[min]) min = m;
 					}
-					s.weights[min] = weight;
-					s.joints[min] = joint;
+
+					if (s.weights[min] < weight)
+					{
+						s.weights[min] = weight;
+						s.joints[min] = joint;
+					}
 				}
 			}
 		}

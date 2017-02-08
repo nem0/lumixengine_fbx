@@ -310,6 +310,11 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			dlg->to_dds = LuaWrapper::toType<bool>(L, -1);
 		}
 		lua_pop(L, 1);
+		if (lua_getfield(L, 2, "center_mesh") == LUA_TBOOLEAN)
+		{
+			dlg->center_mesh = LuaWrapper::toType<bool>(L, -1);
+		}
+		lua_pop(L, 1);
 		if (lua_getfield(L, 2, "scale") == LUA_TNUMBER)
 		{
 			dlg->mesh_scale = LuaWrapper::toType<float>(L, -1);
@@ -824,6 +829,11 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			bool is_skinned = isSkinned(mesh);
 
 			Matrix transform_matrix = Matrix::IDENTITY;
+			FbxNode* mesh_node = mesh->GetNode();
+			FbxAMatrix geometry_matrix(
+				mesh_node->GetGeometricTranslation(FbxNode::eSourcePivot),
+				mesh_node->GetGeometricRotation(FbxNode::eSourcePivot),
+				mesh_node->GetGeometricScaling(FbxNode::eSourcePivot));
 			if (is_skinned)
 			{
 				fillSkinInfo(skinning, mesh);
@@ -832,13 +842,18 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 				auto* skin = static_cast<FbxSkin*>(deformer);
 				auto* cluster = skin->GetCluster(0);
 				FbxAMatrix mtx;
-				FbxAMatrix geometry_matrix(
-					mesh->GetNode()->GetGeometricTranslation(FbxNode::eSourcePivot),
-					mesh->GetNode()->GetGeometricRotation(FbxNode::eSourcePivot),
-					mesh->GetNode()->GetGeometricScaling(FbxNode::eSourcePivot));
 				cluster->GetTransformMatrix(mtx);
 				mtx *= geometry_matrix;
 				transform_matrix = toLumix(mtx);
+			}
+			else
+			{
+				FbxAMatrix node_global_mtx = mesh_node->EvaluateGlobalTransform();
+				transform_matrix = toLumix(node_global_mtx * geometry_matrix);
+				if (center_mesh)
+				{
+					transform_matrix.setTranslation({0, 0, 0});
+				}
 			}
 			bool has_uvs = mesh->GetElementUVCount() > 0;
 			FbxStringList uv_set_name_list;
@@ -1360,6 +1375,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	FS::OsFile out_file;
 	float mesh_scale = 1.0f;
 	bool to_dds = false;
+	bool center_mesh = false;
 };
 
 

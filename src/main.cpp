@@ -310,6 +310,15 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			dlg->to_dds = LuaWrapper::toType<bool>(L, -1);
 		}
 		lua_pop(L, 1);
+		if (lua_getfield(L, 2, "orientation") == LUA_TSTRING)
+		{
+			const char* tmp = LuaWrapper::toType<const char*>(L, -1);
+			if (equalStrings(tmp, "+y")) dlg->orientation = Orientation::Y_UP;
+			else if (equalStrings(tmp, "+z")) dlg->orientation = Orientation::Z_UP;
+			else if (equalStrings(tmp, "-y")) dlg->orientation = Orientation::X_MINUS_UP;
+			else if (equalStrings(tmp, "-z")) dlg->orientation = Orientation::Z_MINUS_UP;
+		}
+		lua_pop(L, 1);
 		if (lua_getfield(L, 2, "center_mesh") == LUA_TBOOLEAN)
 		{
 			dlg->center_mesh = LuaWrapper::toType<bool>(L, -1);
@@ -710,14 +719,14 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 				{
 					// TODO check this in isValid function
 					// assert(scale > 0.99f && scale < 1.01f);
-					write(key.pos * mesh_scale);
+					write(fixOrientation(key.pos * mesh_scale));
 				}
 
 				compressRotations(rotations, frames, sampling_period, eval, bone, 0.0001f);
 
 				write(rotations.size());
 				for (RotationKey& key : rotations) write(key.frame);
-				for (RotationKey& key : rotations) write(key.rot);
+				for (RotationKey& key : rotations) write(fixOrientation(key.rot));
 			}
 			out_file.close();
 		}
@@ -807,6 +816,34 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
+	Vec3 fixOrientation(const Vec3& v) const
+	{
+		switch (orientation)
+		{
+			case Orientation::Y_UP: return Vec3(v.x, v.y, v.z);
+			case Orientation::Z_UP: return Vec3(v.x, v.z, -v.y);
+			case Orientation::Z_MINUS_UP: return Vec3(v.x, -v.z, v.y);
+			case Orientation::X_MINUS_UP: return Vec3(v.y, -v.x, v.z);
+		}
+		ASSERT(false);
+		return Vec3(v.x, v.y, v.z);
+	}
+
+
+	Quat fixOrientation(const Quat& v) const
+	{
+		switch (orientation)
+		{
+			case Orientation::Y_UP: return Quat(v.x, v.y, v.z, v.w);
+			case Orientation::Z_UP: return Quat(v.x, v.z, -v.y, v.w);
+			case Orientation::Z_MINUS_UP: return Quat(v.x, -v.z, v.y, v.w);
+			case Orientation::X_MINUS_UP: return Quat(v.y, -v.x, v.z, v.w);
+		}
+		ASSERT(false);
+		return Quat(v.x, v.y, v.z, v.w);
+	}
+
+
 	// TODO mesh is 4times the size of assimp
 	void writeGeometry()
 	{
@@ -874,6 +911,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 					FbxVector4 cp = mesh->GetControlPointAt(vertex_index);
 					// premultiply control points here, so we can have constantly-scaled meshes without scale in bones
 					Vec3 pos = transform_matrix.transform(toLumixVec3(cp)) * mesh_scale;
+					pos = fixOrientation(pos);
 					vertices_blob.write(pos);
 
 					FbxVector4 fbx_normal;
@@ -881,6 +919,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 					Vec3 normal = toLumixVec3(fbx_normal);
 					normal = transform_matrix * Vec4(normal, 0);
 					normal.normalize();
+					normal = fixOrientation(normal);
 
 					u32 packed_normal = packF4u(normal);
 					vertices_blob.write(packed_normal);
@@ -973,10 +1012,10 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			FbxMesh* mesh = getAnyMeshFromBone(node);
 			FbxAMatrix tr = getBindPoseMatrix(mesh, node);
 
-			auto q = tr.GetQ();
-			auto t = tr.GetT();
-			for (int i = 0; i < 3; ++i) write((float)tr.GetT().mData[i] * mesh_scale);
-			for (double d : tr.GetQ().mData) write((float)d);
+			Quat q = fixOrientation(toLumix(tr.GetQ()));
+			Vec3 t = fixOrientation(toLumixVec3(tr.GetT()));
+			write(t * mesh_scale);
+			write(q);
 		}
 	}
 
@@ -1359,6 +1398,13 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 	const char* getName() const override { return "import_fbx"; }
 
+	enum class Orientation
+	{
+		Y_UP,
+		Z_UP,
+		Z_MINUS_UP,
+		X_MINUS_UP
+	};
 
 	StudioApp& app;
 	bool opened = false;
@@ -1376,6 +1422,8 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	float mesh_scale = 1.0f;
 	bool to_dds = false;
 	bool center_mesh = false;
+	Orientation orientation = Orientation::Y_UP;
+
 };
 
 

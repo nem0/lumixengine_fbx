@@ -15,7 +15,7 @@
 
 
 namespace Lumix
-{ 
+{
 
 
 LUMIX_PLUGIN_ENTRY(lumixengine_fbx)
@@ -49,7 +49,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		int lod = 0;
 	};
 
-	static u32 packuint32(u8 _x, u8 _y, u8 _z, u8 _w)
+	static u32 packu32(u8 _x, u8 _y, u8 _z, u8 _w)
 	{
 		union {
 			u32 ui32;
@@ -71,7 +71,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		const u8 yy = u8(vec.y * 127.0f + 128.0f);
 		const u8 zz = u8(vec.z * 127.0f + 128.0f);
 		const u8 ww = u8(0);
-		return packuint32(xx, yy, zz, ww);
+		return packu32(xx, yy, zz, ww);
 	}
 
 
@@ -135,7 +135,8 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 	void gatherBones(FbxNode* node)
 	{
-		bool is_bone = node->GetNodeAttribute() && node->GetNodeAttribute()->GetAttributeType() == FbxNodeAttribute::EType::eSkeleton;
+		const FbxNodeAttribute* node_attr = node->GetNodeAttribute();
+		bool is_bone = node_attr && node_attr->GetAttributeType() == FbxNodeAttribute::EType::eSkeleton;
 
 		if (is_bone)
 		{
@@ -265,6 +266,11 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		if (lua_getfield(L, 2, "output_dir") == LUA_TSTRING)
 		{
 			dlg->output_dir = LuaWrapper::toType<const char*>(L, -1);
+		}
+		lua_pop(L, 1);
+		if (lua_getfield(L, 2, "to_dds") == LUA_TBOOLEAN)
+		{
+			dlg->to_dds = LuaWrapper::toType<bool>(L, -1);
 		}
 		lua_pop(L, 1);
 		if (lua_getfield(L, 2, "scale") == LUA_TNUMBER)
@@ -415,23 +421,9 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
-	template<typename T>
-	void write(const T& obj)
-	{
-		out_file.write(&obj, sizeof(obj));
-	}
-
-
-	void write(const void* ptr, size_t size)
-	{
-		out_file.write(ptr, size);
-	}
-
-
-	void writeString(const char* str)
-	{
-		out_file.write(str, strlen(str));
-	}
+	template <typename T> void write(const T& obj) { out_file.write(&obj, sizeof(obj)); }
+	void write(const void* ptr, size_t size) { out_file.write(ptr, size); }
+	void writeString(const char* str) { out_file.write(str, strlen(str)); }
 
 
 	void writeMaterials()
@@ -449,30 +441,34 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			}
 
 			writeString("{\n\t\"shader\" : \"pipelines/rigid/rigid.shd\"");
-
-			auto writeTexture = [this](FbxFileTexture* texture) {
+			if (material.alpha_cutout) writeString(",\n\t\"defines\" : [\"ALPHA_CUTOUT\"]");
+			auto writeTexture = [this](FbxFileTexture* texture, bool srgb) {
 				if (texture)
 				{
 					writeString(",\n\t\"texture\" : { \"source\" : \"");
 					PathUtils::FileInfo info(texture->GetFileName());
 					writeString(info.m_basename);
 					writeString(".");
-					writeString(info.m_extension);
-					writeString("\" } ");
+					writeString(to_dds ? "dds" : info.m_extension);
+					writeString("\"");
+					if(srgb) writeString(", \"srgb\" : true");
+					writeString("\n\t}");
 				}
 				else
 				{
-					writeString(",\n\t\"texture\" : { \"source\" : \"\" }");
+					writeString(",\n\t\"texture\" : {");
+					if (srgb) writeString(" \"srgb\" : true\n\t");
+					writeString("}");
 				}
 			};
 
 			FbxProperty diffuse = material.fbx->FindProperty(FbxSurfaceMaterial::sDiffuse);
 			FbxFileTexture* texture = diffuse.GetSrcObject<FbxFileTexture>();
-			writeTexture(texture);
+			writeTexture(texture, true);
 
 			FbxProperty normal = material.fbx->FindProperty(FbxSurfaceMaterial::sNormalMap);
 			texture = diffuse.GetSrcObject<FbxFileTexture>();
-			writeTexture(texture);
+			writeTexture(texture, false);
 
 			writeString("}");
 
@@ -611,8 +607,8 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 			FbxTime::EMode mode = scene->GetGlobalSettings().GetTimeMode();
 			float scene_frame_rate =
-				static_cast<float>((mode == FbxTime::eCustom) ? scene->GetGlobalSettings().GetCustomFrameRate()
-															  : FbxTime::GetFrameRate(mode));
+				(float)((mode == FbxTime::eCustom) ? scene->GetGlobalSettings().GetCustomFrameRate()
+												   : FbxTime::GetFrameRate(mode));
 
 			float sampling_period = 1.0f / scene_frame_rate;
 
@@ -660,8 +656,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 				FbxAnimCurveNode* curve = bone->LclTranslation.GetCurveNode(layer);
 				if (!curve) continue;
 				
-				const char* bone_name = bone->GetName();
-				u32 name_hash = crc32(bone_name, (int)strlen(bone_name));
+				u32 name_hash = crc32(bone->GetName());
 				write(name_hash);
 				int frames = int((duration / sampling_period) + 0.5f);
 
@@ -713,6 +708,58 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		return size;
 	}
 
+	struct Skin
+	{
+		float weights[4];
+		i16 joints[4];
+		int count = 0;
+	};
+
+
+	void fillSkinInfo(Array<Skin>& skinning, const FbxMesh* mesh)const 
+	{
+		skinning.resize(mesh->GetControlPointsCount());
+
+		FbxDeformer* deformer = mesh->GetDeformer(0, FbxDeformer::EDeformerType::eSkin);
+		auto* skin = static_cast<FbxSkin*>(deformer);
+		for (int i = 0; i < skin->GetClusterCount(); ++i)
+		{
+			FbxCluster* cluster = skin->GetCluster(i);
+			int joint = bones.indexOf(cluster->GetLink());
+			const int* cp_indices = cluster->GetControlPointIndices();
+			const double* weights = cluster->GetControlPointWeights();
+			for (int j = 0; j < cluster->GetControlPointIndicesCount(); ++j)
+			{
+				int idx = cp_indices[j];
+				float weight = (float)weights[j];
+				Skin& s = skinning[idx];
+				if (s.count < 4)
+				{
+					s.weights[s.count] = weight;
+					s.joints[s.count] = joint;
+					++s.count;
+				}
+				else
+				{
+					int min = 0;
+					for (int m = 1; m < 4; ++m)
+					{
+						if (s.weights[m] < s.weights[min]) min = m;
+					}
+					s.weights[min] = weight;
+					s.joints[min] = joint;
+				}
+			}
+		}
+
+		for (Skin& s : skinning)
+		{
+			float sum = 0;
+			for (float w : s.weights) sum += w;
+			for (float& w : s.weights) w /= sum;
+		}
+	}
+
 
 	// TODO mesh is 4times the size of assimp
 	void writeGeometry()
@@ -731,12 +778,6 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		{
 			if (!import_mesh.import) continue;
 
-			struct Skin
-			{
-				float weights[4];
-				i16 joints[4];
-				int count = 0;
-			};
 			Array<Skin> skinning(allocator);
 			FbxMesh* mesh = import_mesh.fbx;
 			bool is_skinned = isSkinned(mesh);
@@ -744,47 +785,10 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			Matrix transform_matrix = Matrix::IDENTITY;
 			if (is_skinned)
 			{
-				skinning.resize(mesh->GetControlPointsCount());
+				fillSkinInfo(skinning, mesh);
 
 				FbxDeformer* deformer = mesh->GetDeformer(0, FbxDeformer::EDeformerType::eSkin);
 				auto* skin = static_cast<FbxSkin*>(deformer);
-				for (int i = 0; i < skin->GetClusterCount(); ++i)
-				{
-					FbxCluster* cluster = skin->GetCluster(i);
-					int joint = bones.indexOf(cluster->GetLink());
-					const int* cp_indices = cluster->GetControlPointIndices();
-					const double* weights = cluster->GetControlPointWeights();
-					for (int j = 0; j < cluster->GetControlPointIndicesCount(); ++j)
-					{
-						int idx = cp_indices[j];
-						float weight = (float)weights[j];
-						Skin& s = skinning[idx];
-						if (s.count < 4)
-						{
-							s.weights[s.count] = weight;
-							s.joints[s.count] = joint;
-							++s.count;
-						}
-						else
-						{
-							int min = 0;
-							for (int m = 1; m < 4; ++m)
-							{
-								if (s.weights[m] < s.weights[min]) min = m;
-							}
-							s.weights[min] = weight;
-							s.joints[min] = joint;
-						}
-					}
-				}
-
-				for (Skin& s : skinning)
-				{
-					float sum = 0;
-					for (float w : s.weights) sum += w;
-					for (float& w : s.weights) w /= sum;
-				}
-
 				auto* cluster = skin->GetCluster(0);
 				FbxAMatrix mtx;
 				FbxAMatrix geometry_matrix(
@@ -816,12 +820,11 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 					Vec3 pos = transform_matrix.transform(toLumixVec3(cp)) * mesh_scale;
 					vertices_blob.write(pos);
 
-					// TODO correct normal
 					FbxVector4 fbx_normal;
 					mesh->GetPolygonVertexNormal(i, j, fbx_normal);
 					Vec3 normal = toLumixVec3(fbx_normal);
 					normal = transform_matrix * Vec4(normal, 0);
-//					normal.normalize();
+					normal.normalize();
 
 					u32 packed_normal = packF4u(normal);
 					vertices_blob.write(packed_normal);
@@ -1050,6 +1053,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	{
 		for (FbxScene* scene : scenes) scene->Destroy();
 		scenes.clear();
+		meshes.clear();
 		materials.clear();
 		animations.clear();
 		bones.clear();
@@ -1299,13 +1303,14 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	Array<ImportMesh> meshes;
 	Array<ImportAnimation> animations;
 	Array<FbxNode*> bones;
+	Array<FbxScene*> scenes;
 	StaticString<MAX_PATH_LENGTH> output_dir;
 	StaticString<MAX_PATH_LENGTH> last_dir;
 	StaticString<MAX_PATH_LENGTH> output_mesh_filename;
-	Array<FbxScene*> scenes;
 	float lods_distances[4] = {-10, -100, -1000, -10000};
 	FS::OsFile out_file;
 	float mesh_scale = 1.0f;
+	bool to_dds = false;
 };
 
 

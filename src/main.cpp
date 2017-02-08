@@ -176,6 +176,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		{
 			ImportMesh& mesh = meshes.emplace();
 			mesh.fbx = scene->GetSrcObject<FbxMesh>(i);
+			mesh.lod = getMeshLOD(mesh);
 			if (mesh.fbx->GetElementMaterialCount() == 0) continue;
 
 			const auto& index_array = mesh.fbx->GetElementMaterial(0)->GetIndexArray();
@@ -184,6 +185,23 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			FbxNode* node = mesh.fbx->GetNode();
 			mesh.fbx_mat = node->GetMaterial(index_array[0]);
 		}
+	}
+
+
+	static int getMeshLOD(const ImportMesh& mesh)
+	{
+		const char* mesh_name = getMeshName(mesh);
+		if (!mesh_name) return 0;
+
+		const char* lod_str = stristr(mesh_name, "_LOD");
+		if (!lod_str) return 0;
+
+		lod_str += stringLength("_LOD");
+
+		int lod;
+		fromCString(lod_str, stringLength(lod_str), &lod);
+
+		return lod;
 	}
 
 
@@ -263,6 +281,25 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		auto* dlg = LuaWrapper::checkArg<ImportFBXPlugin*>(L, 1);
 		LuaWrapper::checkTableArg(L, 2);
 
+		if (lua_getfield(L, 2, "lods") == LUA_TTABLE)
+		{
+			lua_pushnil(L);
+			int lod_index = 0;
+			while (lua_next(L, -2) != 0)
+			{
+				if (lod_index >= lengthOf(dlg->lods_distances))
+				{
+					g_log_error.log("Editor") << "Only " << lengthOf(dlg->lods_distances) << " supported";
+					lua_pop(L, 1);
+					break;
+				}
+
+				dlg->lods_distances[lod_index] = LuaWrapper::toType<float>(L, -1);
+				++lod_index;
+				lua_pop(L, 1);
+			}
+		}
+		lua_pop(L, 1); // "lods"
 		if (lua_getfield(L, 2, "output_dir") == LUA_TSTRING)
 		{
 			dlg->output_dir = LuaWrapper::toType<const char*>(L, -1);
@@ -451,13 +488,13 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 					writeString(".");
 					writeString(to_dds ? "dds" : info.m_extension);
 					writeString("\"");
-					if(srgb) writeString(", \"srgb\" : true");
-					writeString("\n\t}");
+					if(srgb) writeString(", \"srgb\" : true ");
+					writeString("}");
 				}
 				else
 				{
 					writeString(",\n\t\"texture\" : {");
-					if (srgb) writeString(" \"srgb\" : true\n\t");
+					if (srgb) writeString(" \"srgb\" : true ");
 					writeString("}");
 				}
 			};
@@ -1120,6 +1157,15 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
+	static const char* getMeshName(const ImportMesh& mesh)
+	{
+		const char* name = mesh.fbx->GetName();
+		FbxSurfaceMaterial* material = mesh.fbx_mat;
+		if (name[0] == '\0' && material) name = material->GetName();
+		return name;
+	}
+
+
 	void onMeshesGUI()
 	{
 		StaticString<30> label("Meshes (");
@@ -1145,12 +1191,11 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 		for (auto& mesh : meshes)
 		{
-			const char* name = mesh.fbx->GetName();
-			FbxSurfaceMaterial* material = mesh.fbx_mat;
-			if (name[0] == '\0' && material) name = material->GetName();
+			const char* name = getMeshName(mesh);
 			ImGui::Text("%s", name);
 			ImGui::NextColumn();
 
+			FbxSurfaceMaterial* material = mesh.fbx_mat;
 			ImGui::Text("%s", material ? material->GetName() : "N/A");
 			ImGui::NextColumn();
 

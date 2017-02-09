@@ -202,11 +202,16 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 	static int detectMeshLOD(const ImportMesh& mesh)
 	{
-		const char* mesh_name = getImportMeshName(mesh);
-		if (!mesh_name) return 0;
+		const char* node_name = mesh.fbx->GetNode()->GetName();
+		const char* lod_str = stristr(node_name, "_LOD");
+		if (!lod_str)
+		{ 
+			const char* mesh_name = getImportMeshName(mesh);
+			if (!mesh_name) return 0;
 
-		const char* lod_str = stristr(mesh_name, "_LOD");
-		if (!lod_str) return 0;
+			const char* lod_str = stristr(mesh_name, "_LOD");
+			if (!lod_str) return 0;
+		}
 
 		lod_str += stringLength("_LOD");
 
@@ -1014,10 +1019,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			indices_offset += mesh_tri_count * 3;
 			write(mesh_tri_count);
 
-			const char* name = mesh->GetNode()->GetName();
-			if (name[0] == 0) mesh->GetName();
-			if (name[0] == 0) name = mat;
-			if (name[0] == 0) "Unknown";
+			const char* name = getImportMeshName(import_mesh);
 			i32 name_len = (i32)strlen(name);
 			write(name_len);
 			write(name, strlen(name));
@@ -1255,6 +1257,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	{
 		const char* name = mesh.fbx->GetName();
 		FbxSurfaceMaterial* material = mesh.fbx_mat;
+		if (name[0] == '\0') name = mesh.fbx->GetNode()->GetName();
 		if (name[0] == '\0' && material) name = material->GetName();
 		return name;
 	}

@@ -164,6 +164,18 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			ImportAnimation& anim = animations.emplace();
 			anim.fbx = scene->GetSrcObject<FbxAnimStack>(i);
 			anim.import = true;
+			
+			const FbxTakeInfo* take_info = scene->GetTakeInfo(anim.fbx->GetName());
+			if (take_info)
+			{
+				if (!take_info->mName.IsEmpty()) anim.output_filename = take_info->mName.Buffer();
+				if (anim.output_filename .data[0] == 0 && !take_info->mImportName.IsEmpty()) anim.output_filename = take_info->mImportName.Buffer();
+				if (anim.output_filename .data[0] == 0) anim.output_filename << "anim";
+			}
+			else
+			{
+				anim.output_filename = "anim";
+			}
 			anim.output_filename = anim.fbx->GetName();
 		}
 	}
@@ -332,6 +344,33 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		return 0;
 	}
 
+	static int LUA_setAnimationParams(lua_State* L)
+	{
+		auto* dlg = LuaWrapper::toType<ImportFBXPlugin*>(L, lua_upvalueindex(1));
+		int anim_idx = LuaWrapper::checkArg<int>(L, 1);
+		LuaWrapper::checkTableArg(L, 2);
+		if (anim_idx < 0 || anim_idx >= dlg->animations.size()) return 0;
+
+		ImportAnimation& anim = dlg->animations[anim_idx];
+
+		lua_pushvalue(L, 2);
+
+		if (lua_getfield(L, -1, "import") == LUA_TBOOLEAN)
+		{
+			anim.import = LuaWrapper::toType<bool>(L, -1);
+		}
+		lua_pop(L, 1); // "import"
+
+		if (lua_getfield(L, -1, "filename") == LUA_TSTRING)
+		{
+			anim.output_filename = LuaWrapper::toType<const char*>(L, -1);
+		}
+		lua_pop(L, 1); // "import"
+
+		lua_pop(L, 1); // table
+		return 0;
+	}
+
 
 	static int LUA_setMeshParams(lua_State* L)
 	{
@@ -432,6 +471,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		REGISTER_FUNCTION(setParams);
 		REGISTER_FUNCTION(setMaterialParams);
 		REGISTER_FUNCTION(setMeshParams);
+		REGISTER_FUNCTION(setAnimationParams);
 
 		#undef REGISTER_FUNCTION
 	}
@@ -647,13 +687,9 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 			FbxTimeSpan time_spawn;
 			const FbxTakeInfo* take_info = scene->GetTakeInfo(stack->GetName());
-			StaticString<64> name;
 			if (take_info)
 			{
 				time_spawn = take_info->mLocalTimeSpan;
-				if (!take_info->mName.IsEmpty()) name = take_info->mName.Buffer();
-				if (name.data[0] == 0 && !take_info->mImportName.IsEmpty()) name = take_info->mImportName.Buffer();
-				if (name.data[0] == 0) name << "anim";
 			}
 			else
 			{
@@ -672,7 +708,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 			float duration = end > start ? end - start : 1.0f;
 
-			StaticString<MAX_PATH_LENGTH> tmp(output_dir, name, ".ani");
+			StaticString<MAX_PATH_LENGTH> tmp(output_dir, anim.output_filename, ".ani");
 			IAllocator& allocator = app.getWorldEditor()->getAllocator();
 			if (!out_file.open(tmp, FS::Mode::CREATE_AND_WRITE, allocator))
 			{

@@ -278,10 +278,10 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 	static int LUA_setParams(lua_State* L)
 	{
-		auto* dlg = LuaWrapper::checkArg<ImportFBXPlugin*>(L, 1);
-		LuaWrapper::checkTableArg(L, 2);
+		auto* dlg= LuaWrapper::toType<ImportFBXPlugin*>(L, lua_upvalueindex(1));
+		LuaWrapper::checkTableArg(L, 1);
 
-		if (lua_getfield(L, 2, "lods") == LUA_TTABLE)
+		if (lua_getfield(L, 1, "lods") == LUA_TTABLE)
 		{
 			lua_pushnil(L);
 			int lod_index = 0;
@@ -300,17 +300,17 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			}
 		}
 		lua_pop(L, 1); // "lods"
-		if (lua_getfield(L, 2, "output_dir") == LUA_TSTRING)
+		if (lua_getfield(L, 1, "output_dir") == LUA_TSTRING)
 		{
 			dlg->output_dir = LuaWrapper::toType<const char*>(L, -1);
 		}
 		lua_pop(L, 1);
-		if (lua_getfield(L, 2, "to_dds") == LUA_TBOOLEAN)
+		if (lua_getfield(L, 1, "to_dds") == LUA_TBOOLEAN)
 		{
 			dlg->to_dds = LuaWrapper::toType<bool>(L, -1);
 		}
 		lua_pop(L, 1);
-		if (lua_getfield(L, 2, "orientation") == LUA_TSTRING)
+		if (lua_getfield(L, 1, "orientation") == LUA_TSTRING)
 		{
 			const char* tmp = LuaWrapper::toType<const char*>(L, -1);
 			if (equalStrings(tmp, "+y")) dlg->orientation = Orientation::Y_UP;
@@ -319,12 +319,12 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			else if (equalStrings(tmp, "-z")) dlg->orientation = Orientation::Z_MINUS_UP;
 		}
 		lua_pop(L, 1);
-		if (lua_getfield(L, 2, "center_mesh") == LUA_TBOOLEAN)
+		if (lua_getfield(L, 1, "center_mesh") == LUA_TBOOLEAN)
 		{
 			dlg->center_mesh = LuaWrapper::toType<bool>(L, -1);
 		}
 		lua_pop(L, 1);
-		if (lua_getfield(L, 2, "scale") == LUA_TNUMBER)
+		if (lua_getfield(L, 1, "scale") == LUA_TNUMBER)
 		{
 			dlg->mesh_scale = LuaWrapper::toType<float>(L, -1);
 		}
@@ -335,14 +335,14 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 	static int LUA_setMeshParams(lua_State* L)
 	{
-		auto* dlg = LuaWrapper::checkArg<ImportFBXPlugin*>(L, 1);
-		int mesh_idx = LuaWrapper::checkArg<int>(L, 2);
-		LuaWrapper::checkTableArg(L, 3);
+		auto* dlg = LuaWrapper::toType<ImportFBXPlugin*>(L, lua_upvalueindex(1));
+		int mesh_idx = LuaWrapper::checkArg<int>(L, 1);
+		LuaWrapper::checkTableArg(L, 2);
 		if (mesh_idx < 0 || mesh_idx >= dlg->meshes.size()) return 0;
 
 		ImportMesh& mesh = dlg->meshes[mesh_idx];
 
-		lua_pushvalue(L, 3);
+		lua_pushvalue(L, 2);
 
 		if (lua_getfield(L, -1, "import") == LUA_TBOOLEAN)
 		{
@@ -369,14 +369,14 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 	static int LUA_setMaterialParams(lua_State* L)
 	{
-		auto* dlg = LuaWrapper::checkArg<ImportFBXPlugin*>(L, 1);
-		int material_idx = LuaWrapper::checkArg<int>(L, 2);
-		LuaWrapper::checkTableArg(L, 3);
+		auto* dlg = LuaWrapper::toType<ImportFBXPlugin*>(L, lua_upvalueindex(1));
+		int material_idx = LuaWrapper::checkArg<int>(L, 1);
+		LuaWrapper::checkTableArg(L, 2);
 		if (material_idx < 0 || material_idx >= dlg->materials.size()) return 0;
 
 		ImportMaterial& material = dlg->materials[material_idx];
 
-		lua_pushvalue(L, 3);
+		lua_pushvalue(L, 2);
 
 		if (lua_getfield(L, -1, "import") == LUA_TBOOLEAN)
 		{
@@ -410,8 +410,8 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 		#define REGISTER_FUNCTION(name) \
 			do {\
-				auto f = &LuaWrapper::wrapMethod<ImportFBXPlugin, decltype(&ImportFBXPlugin::name), &ImportFBXPlugin::name>; \
-				LuaWrapper::createSystemFunction(L, "ImportFBX", #name, f); \
+				auto f = &LuaWrapper::wrapMethodClosure<ImportFBXPlugin, decltype(&ImportFBXPlugin::name), &ImportFBXPlugin::name>; \
+				LuaWrapper::createSystemClosure(L, "ImportFBX", this, #name, f); \
 			} while(false) \
 
 		REGISTER_FUNCTION(addSource);
@@ -426,7 +426,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 		#define REGISTER_FUNCTION(name) \
 			do {\
-				LuaWrapper::createSystemFunction(L, "ImportFBX", #name, &LUA_##name); \
+				LuaWrapper::createSystemClosure(L, "ImportFBX", this, #name, &LUA_##name); \
 			} while(false) \
 
 		REGISTER_FUNCTION(setParams);

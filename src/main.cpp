@@ -176,7 +176,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		{
 			ImportMesh& mesh = meshes.emplace();
 			mesh.fbx = scene->GetSrcObject<FbxMesh>(i);
-			mesh.lod = getMeshLOD(mesh);
+			mesh.lod = detectMeshLOD(mesh);
 			if (mesh.fbx->GetElementMaterialCount() == 0) continue;
 
 			const auto& index_array = mesh.fbx->GetElementMaterial(0)->GetIndexArray();
@@ -188,9 +188,9 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
-	static int getMeshLOD(const ImportMesh& mesh)
+	static int detectMeshLOD(const ImportMesh& mesh)
 	{
-		const char* mesh_name = getMeshName(mesh);
+		const char* mesh_name = getImportMeshName(mesh);
 		if (!mesh_name) return 0;
 
 		const char* lod_str = stristr(mesh_name, "_LOD");
@@ -397,6 +397,8 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 	int getMaterialsCount() { return materials.size(); }
 	int getMeshesCount() { return meshes.size(); }
+	const char* getMeshName(int mesh_idx) { return getImportMeshName(meshes[mesh_idx]); }
+	int getMeshLOD(int mesh_idx) { return meshes[mesh_idx].lod; }
 
 
 	void registerLuaAPI()
@@ -417,6 +419,8 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		REGISTER_FUNCTION(import);
 		REGISTER_FUNCTION(getMaterialsCount);
 		REGISTER_FUNCTION(getMeshesCount);
+		REGISTER_FUNCTION(getMeshName);
+		REGISTER_FUNCTION(getMeshLOD);
 
 		#undef REGISTER_FUNCTION
 
@@ -625,7 +629,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		}
 
 		float t = frames * sample_period;
-		last_written = { toLumix(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(t)).GetQ()), t, (u16)frames };
+		last_written = {toLumix(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(t)).GetQ()), t, (u16)frames};
 		out.push(last_written);
 	}
 
@@ -1211,7 +1215,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
-	static const char* getMeshName(const ImportMesh& mesh)
+	static const char* getImportMeshName(const ImportMesh& mesh)
 	{
 		const char* name = mesh.fbx->GetName();
 		FbxSurfaceMaterial* material = mesh.fbx_mat;
@@ -1245,7 +1249,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 		for (auto& mesh : meshes)
 		{
-			const char* name = getMeshName(mesh);
+			const char* name = getImportMeshName(mesh);
 			ImGui::Text("%s", name);
 			ImGui::NextColumn();
 

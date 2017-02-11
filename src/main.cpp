@@ -517,6 +517,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 		FbxNode* root = scene->GetRootNode();
 		gatherMaterials(root);
+		materials.removeDuplicates([](const ImportMaterial& a, const ImportMaterial& b) { return a.fbx == b.fbx; });
 		gatherMeshes(scene);
 		gatherBones(root);
 		gatherAnimations(scene);

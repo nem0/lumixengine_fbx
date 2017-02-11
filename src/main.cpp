@@ -5,6 +5,7 @@
 #include "editor/world_editor.h"
 #include "engine/blob.h"
 #include "engine/crc32.h"
+#include "engine/fs/disk_file_device.h"
 #include "engine/fs/os_file.h"
 #include "engine/iplugin.h"
 #include "engine/lua_wrapper.h"
@@ -169,8 +170,8 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			if (take_info)
 			{
 				if (!take_info->mName.IsEmpty()) anim.output_filename = take_info->mName.Buffer();
-				if (anim.output_filename .data[0] == 0 && !take_info->mImportName.IsEmpty()) anim.output_filename = take_info->mImportName.Buffer();
-				if (anim.output_filename .data[0] == 0) anim.output_filename << "anim";
+				if (anim.output_filename.empty() && !take_info->mImportName.IsEmpty()) anim.output_filename = take_info->mImportName.Buffer();
+				if (anim.output_filename.empty()) anim.output_filename << "anim";
 			}
 			else
 			{
@@ -320,6 +321,11 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		if (lua_getfield(L, 1, "output_dir") == LUA_TSTRING)
 		{
 			dlg->output_dir = LuaWrapper::toType<const char*>(L, -1);
+		}
+		lua_pop(L, 1);
+		if (lua_getfield(L, 1, "texture_dir") == LUA_TSTRING)
+		{
+			dlg->texture_dir = LuaWrapper::toType<const char*>(L, -1);
 		}
 		lua_pop(L, 1);
 		if (lua_getfield(L, 1, "to_dds") == LUA_TBOOLEAN)
@@ -547,6 +553,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 				{
 					writeString(",\n\t\"texture\" : { \"source\" : \"");
 					PathUtils::FileInfo info(texture->GetFileName());
+					writeString(texture_dir.data);
 					writeString(info.m_basename);
 					writeString(".");
 					writeString(to_dds ? "dds" : info.m_extension);
@@ -567,7 +574,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			writeTexture(texture, true);
 
 			FbxProperty normal = material.fbx->FindProperty(FbxSurfaceMaterial::sNormalMap);
-			texture = diffuse.GetSrcObject<FbxFileTexture>();
+			texture = normal.GetSrcObject<FbxFileTexture>();
 			writeTexture(texture, false);
 
 			writeString("}");
@@ -1141,11 +1148,32 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
+	void makeTextureDirRelative()
+	{
+		if (texture_dir.empty()) return;
+
+		Engine& engine = app.getWorldEditor()->getEngine();
+		const char* base_path = engine.getDiskFileDevice()->getBasePath();
+		char tmp[MAX_PATH_LENGTH];
+		PathUtils::normalize(texture_dir, tmp, lengthOf(tmp));
+		if (startsWith(tmp, base_path))
+		{
+			texture_dir = "/";
+			texture_dir << tmp + stringLength(base_path);
+		}
+	}
+
+
 	bool import()
 	{
 		if (!endsWith(output_dir.data, "/") && !endsWith(output_dir.data, "\\"))
 		{
 			output_dir << "/";
+		}
+		makeTextureDirRelative();
+		if (!endsWith(texture_dir.data, "/") && !endsWith(texture_dir.data, "\\") && !texture_dir.empty())
+		{
+			texture_dir << "/";
 		}
 
 		writeModel();
@@ -1431,6 +1459,15 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 						last_dir = output_dir;
 					}
 				}
+				ImGui::InputText("Texture directory", texture_dir.data, sizeof(texture_dir));
+				ImGui::SameLine();
+				if (ImGui::Button("...###browsetexturedir"))
+				{
+					if (PlatformInterface::getOpenDirectory(texture_dir.data, sizeof(texture_dir), last_dir))
+					{
+						last_dir = texture_dir;
+					}
+				}
 
 				if (ImGui::Button("Convert")) import();
 			}
@@ -1458,6 +1495,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	Array<FbxNode*> bones;
 	Array<FbxScene*> scenes;
 	StaticString<MAX_PATH_LENGTH> output_dir;
+	StaticString<MAX_PATH_LENGTH> texture_dir;
 	StaticString<MAX_PATH_LENGTH> last_dir;
 	StaticString<MAX_PATH_LENGTH> output_mesh_filename;
 	float lods_distances[4] = {-10, -100, -1000, -10000};

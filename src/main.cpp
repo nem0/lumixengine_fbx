@@ -596,29 +596,32 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	};
 
 
+	// arg parent_scale - animated scale is not supported, but we can get rid of static scale if we ignore 
+	// it in writeSkeleton() and use parent_scale in this function
 	static void compressPositions(Array<TranslationKey>& out,
 		int frames,
 		float sample_period,
 		FbxAnimEvaluator* eval,
 		FbxNode* bone,
-		float error)
+		float error,
+		float parent_scale)
 	{
 		out.clear();
 		if (frames == 0) return;
 
-		Vec3 pos = toLumixVec3(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(0)).GetT());
+		Vec3 pos = toLumixVec3(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(0)).GetT()) * parent_scale;
 		TranslationKey last_written = {pos, 0, 0};
 		out.push(last_written);
 		if (frames == 1) return;
 
 		float dt = sample_period;
-		pos = toLumixVec3(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(sample_period)).GetT());
+		pos = toLumixVec3(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(sample_period)).GetT()) * parent_scale;
 		Vec3 dif = (pos - last_written.pos) / sample_period;
 		TranslationKey prev = {pos, sample_period, 1};
 		for (u16 i = 2; i < (u16)frames; ++i)
 		{
 			float t = i * sample_period;
-			Vec3 cur = toLumixVec3(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(t)).GetT());
+			Vec3 cur = toLumixVec3(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(t)).GetT()) * parent_scale;
 			dt = t - last_written.time;
 			Vec3 estimate = last_written.pos + dif * dt;
 			if (fabs(estimate.x - cur.x) > error
@@ -635,7 +638,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		}
 
 		float t = frames * sample_period;
-		last_written = { toLumixVec3(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(t)).GetT()), t, (u16)frames};
+		last_written = { toLumixVec3(eval->GetNodeLocalTransform(bone, FbxTimeSeconds(t)).GetT()) * parent_scale, t, (u16)frames};
 		out.push(last_written);
 	}
 
@@ -767,7 +770,8 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 				write(name_hash);
 				int frames = int((duration / sampling_period) + 0.5f);
 
-				compressPositions(positions, frames, sampling_period, eval, bone, 0.001f);
+				float parent_scale = bone->GetParent() ? (float)bone->GetParent()->EvaluateGlobalTransform().GetS().mData[0] : 1;
+				compressPositions(positions, frames, sampling_period, eval, bone, 0.001f, parent_scale);
 				write(positions.size());
 
 				for (TranslationKey& key : positions) write(key.frame);
@@ -1265,9 +1269,9 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		{
 			ImportAnimation& animation = animations[i];
 			ImGui::PushID(i);
-			ImGui::InputText("", animation.output_filename.data, lengthOf(animation.output_filename.data));
+			ImGui::InputText("##anim_filename", animation.output_filename.data, lengthOf(animation.output_filename.data));
 			ImGui::NextColumn();
-			ImGui::Checkbox("", &animation.import);
+			ImGui::Checkbox("##anim_import", &animation.import);
 			ImGui::NextColumn();
 			/*auto getter = [](void* data, int idx, const char** out) -> bool {
 				auto* animation = (ImportAnimation*)data;

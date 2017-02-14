@@ -134,21 +134,21 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
+	static void insertHierarchy(Array<FbxNode*>& bones, FbxNode* node)
+	{
+		if (!node) return;
+		if (bones.indexOf(node) >= 0) return;
+		insertHierarchy(bones, node->GetParent());
+		bones.push(node);
+	}
+
+
 	void gatherBones(FbxNode* node)
 	{
 		const FbxNodeAttribute* node_attr = node->GetNodeAttribute();
 		bool is_bone = node_attr && node_attr->GetAttributeType() == FbxNodeAttribute::EType::eSkeleton;
 
-		if (is_bone)
-		{
-			FbxNode* parent = node->GetParent();
-			while (parent && bones.indexOf(parent) < 0)
-			{
-				bones.push(parent);
-				parent = parent->GetParent();
-			}
-			bones.push(node);
-		}
+		if (is_bone) insertHierarchy(bones, node);
 
 		for (int i = 0; i < node->GetChildCount(); ++i)
 		{
@@ -445,6 +445,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
+	int getAnimationsCount() { return animations.size(); }
 	int getMaterialsCount() { return materials.size(); }
 	int getMeshesCount() { return meshes.size(); }
 	const char* getMeshName(int mesh_idx) { return getImportMeshName(meshes[mesh_idx]); }
@@ -468,6 +469,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		REGISTER_FUNCTION(clearSources);
 		REGISTER_FUNCTION(import);
 		REGISTER_FUNCTION(getMaterialsCount);
+		REGISTER_FUNCTION(getAnimationsCount);
 		REGISTER_FUNCTION(getMeshesCount);
 		REGISTER_FUNCTION(getMeshName);
 		REGISTER_FUNCTION(getMeshLOD);
@@ -509,6 +511,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 		FbxGeometryConverter converter(fbx_manager);
 		converter.SplitMeshesPerMaterial(scene, true);
+		converter.Triangulate(scene, true);
 
 		if (scenes.empty())
 		{

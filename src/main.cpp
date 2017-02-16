@@ -357,6 +357,11 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			dlg->mesh_scale = LuaWrapper::toType<float>(L, -1);
 		}
 		lua_pop(L, 1);
+		if (lua_getfield(L, 1, "bounding_shape_scale") == LUA_TNUMBER)
+		{
+			dlg->bounding_shape_scale = LuaWrapper::toType<float>(L, -1);
+		}
+		lua_pop(L, 1);
 		return 0;
 	}
 
@@ -1018,7 +1023,9 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		}
 		write(vertices_blob.getPos());
 		write(vertices_blob.getData(), vertices_blob.getPos());
-		write(sqrtf(radius_squared));
+		write(sqrtf(radius_squared) * bounding_shape_scale);
+		aabb.min *= bounding_shape_scale;
+		aabb.max *= bounding_shape_scale;
 		write(aabb);
 	}
 
@@ -1476,6 +1483,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 				onAnimationsGUI();
 
 				ImGui::InputFloat("Scale", &mesh_scale);
+				ImGui::InputFloat("Bounding shape scale", &bounding_shape_scale);
 				ImGui::InputText("Output directory", output_dir.data, sizeof(output_dir));
 				ImGui::SameLine();
 				if (ImGui::Button("...###browseoutput"))
@@ -1527,6 +1535,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	float lods_distances[4] = {-10, -100, -1000, -10000};
 	FS::OsFile out_file;
 	float mesh_scale = 1.0f;
+	float bounding_shape_scale = 1.0f;
 	bool to_dds = false;
 	bool center_mesh = false;
 	Orientation orientation = Orientation::Y_UP;

@@ -333,6 +333,11 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			dlg->to_dds = LuaWrapper::toType<bool>(L, -1);
 		}
 		lua_pop(L, 1);
+		if (lua_getfield(L, 1, "mesh_filename") == LUA_TSTRING)
+		{
+			dlg->output_mesh_filename = LuaWrapper::toType<const char*>(L, -1);
+		}
+		lua_pop(L, 1);
 		if (lua_getfield(L, 1, "orientation") == LUA_TSTRING)
 		{
 			const char* tmp = LuaWrapper::toType<const char*>(L, -1);
@@ -748,12 +753,12 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			for (FbxNode* bone : bones)
 			{
 				if (bone->GetScene() != scene) continue;
-				
+
 				FbxAnimEvaluator* eval = scene->GetAnimationEvaluator();
 				FbxAnimLayer* layer = stack->GetMember<FbxAnimLayer>();
-				FbxAnimCurveNode* curve = bone->LclTranslation.GetCurveNode(layer);
-				if (curve) ++used_bone_count;
+				if (bone->LclTranslation.GetCurveNode(layer) || bone->LclRotation.GetCurveNode(layer)) ++used_bone_count;
 			}
+
 			write(used_bone_count);
 			Array<TranslationKey> positions(allocator);
 			Array<RotationKey> rotations(allocator);
@@ -763,9 +768,8 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 				FbxAnimEvaluator* eval = scene->GetAnimationEvaluator();
 				FbxAnimLayer* layer = stack->GetMember<FbxAnimLayer>();
-				FbxAnimCurveNode* curve = bone->LclTranslation.GetCurveNode(layer);
-				if (!curve) continue;
-				
+				if (!bone->LclTranslation.GetCurveNode(layer) && !bone->LclRotation.GetCurveNode(layer)) continue;
+
 				u32 name_hash = crc32(bone->GetName());
 				write(name_hash);
 				int frames = int((duration / sampling_period) + 0.5f);

@@ -1018,7 +1018,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		}
 		write(vertices_blob.getPos());
 		write(vertices_blob.getData(), vertices_blob.getPos());
-		write(sqrt(radius_squared));
+		write(sqrtf(radius_squared));
 		write(aabb);
 	}
 

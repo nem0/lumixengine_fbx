@@ -911,6 +911,8 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	// TODO mesh is 4times the size of assimp
 	void writeGeometry()
 	{
+		AABB aabb = {{0, 0, 0}, {0, 0, 0}};
+		float radius_squared = 0;
 		i32 indices_count = 0;
 		IAllocator& allocator = app.getWorldEditor()->getAllocator();
 
@@ -976,6 +978,16 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 					// premultiply control points here, so we can have constantly-scaled meshes without scale in bones
 					Vec3 pos = transform_matrix.transform(toLumixVec3(cp)) * mesh_scale;
 					pos = fixOrientation(pos);
+					float sq_len = pos.squaredLength();
+					radius_squared = Math::maximum(radius_squared, sq_len);
+					
+					aabb.min.x = Math::minimum(aabb.min.x, pos.x);
+					aabb.min.y = Math::minimum(aabb.min.y, pos.y);
+					aabb.min.z = Math::minimum(aabb.min.z, pos.z);
+					aabb.max.x = Math::maximum(aabb.max.x, pos.x);
+					aabb.max.y = Math::maximum(aabb.max.y, pos.y);
+					aabb.max.z = Math::maximum(aabb.max.z, pos.z);
+					
 					vertices_blob.write(pos);
 
 					FbxVector4 fbx_normal;
@@ -1006,6 +1018,8 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 		}
 		write(vertices_blob.getPos());
 		write(vertices_blob.getData(), vertices_blob.getPos());
+		write(sqrt(radius_squared));
+		write(aabb);
 	}
 
 

@@ -328,11 +328,6 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			dlg->texture_dir = LuaWrapper::toType<const char*>(L, -1);
 		}
 		lua_pop(L, 1);
-		if (lua_getfield(L, 1, "to_dds") == LUA_TBOOLEAN)
-		{
-			dlg->to_dds = LuaWrapper::toType<bool>(L, -1);
-		}
-		lua_pop(L, 1);
 		if (lua_getfield(L, 1, "mesh_filename") == LUA_TSTRING)
 		{
 			dlg->output_mesh_filename = LuaWrapper::toType<const char*>(L, -1);
@@ -347,21 +342,11 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 			else if (equalStrings(tmp, "-z")) dlg->orientation = Orientation::Z_MINUS_UP;
 		}
 		lua_pop(L, 1);
-		if (lua_getfield(L, 1, "center_mesh") == LUA_TBOOLEAN)
-		{
-			dlg->center_mesh = LuaWrapper::toType<bool>(L, -1);
-		}
-		lua_pop(L, 1);
-		if (lua_getfield(L, 1, "scale") == LUA_TNUMBER)
-		{
-			dlg->mesh_scale = LuaWrapper::toType<float>(L, -1);
-		}
-		lua_pop(L, 1);
-		if (lua_getfield(L, 1, "bounding_shape_scale") == LUA_TNUMBER)
-		{
-			dlg->bounding_shape_scale = LuaWrapper::toType<float>(L, -1);
-		}
-		lua_pop(L, 1);
+		LuaWrapper::getOptionalField(L, 1, "to_dds", &dlg->to_dds);
+		LuaWrapper::getOptionalField(L, 1, "center_mesh", &dlg->center_mesh);
+		LuaWrapper::getOptionalField(L, 1, "ignore_skeleton", &dlg->ignore_skeleton);
+		LuaWrapper::getOptionalField(L, 1, "scale", &dlg->mesh_scale);
+		LuaWrapper::getOptionalField(L, 1, "bounding_shape_scale", &dlg->bounding_shape_scale);
 		return 0;
 	}
 
@@ -376,17 +361,13 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 		lua_pushvalue(L, 2);
 
-		if (lua_getfield(L, -1, "import") == LUA_TBOOLEAN)
-		{
-			anim.import = LuaWrapper::toType<bool>(L, -1);
-		}
-		lua_pop(L, 1); // "import"
+		LuaWrapper::getOptionalField(L, 1, "import", &anim.import);
 
 		if (lua_getfield(L, -1, "filename") == LUA_TSTRING)
 		{
 			anim.output_filename = LuaWrapper::toType<const char*>(L, -1);
 		}
-		lua_pop(L, 1); // "import"
+		lua_pop(L, 1); // "filename"
 
 		lua_pop(L, 1); // table
 		return 0;
@@ -402,27 +383,10 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 		ImportMesh& mesh = dlg->meshes[mesh_idx];
 
-		lua_pushvalue(L, 2);
+		LuaWrapper::getOptionalField(L, 2, "import", &mesh.import);
+		LuaWrapper::getOptionalField(L, 2, "import_physics", &mesh.import_physics);
+		LuaWrapper::getOptionalField(L, 2, "lod", &mesh.lod);
 
-		if (lua_getfield(L, -1, "import") == LUA_TBOOLEAN)
-		{
-			mesh.import = LuaWrapper::toType<bool>(L, -1);
-		}
-		lua_pop(L, 1); // "import"
-
-		if (lua_getfield(L, -1, "import_physics") == LUA_TBOOLEAN)
-		{
-			mesh.import_physics = LuaWrapper::toType<bool>(L, -1);
-		}
-		lua_pop(L, 1); // "import_physics"
-
-		if (lua_getfield(L, -1, "lod") == LUA_TNUMBER)
-		{
-			mesh.lod = LuaWrapper::toType<int>(L, -1);
-		}
-		lua_pop(L, 1); // "lod"
-
-		lua_pop(L, 1); // table
 		return 0;
 	}
 
@@ -436,21 +400,9 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 		ImportMaterial& material = dlg->materials[material_idx];
 
-		lua_pushvalue(L, 2);
+		LuaWrapper::getOptionalField(L, 2, "import", &material.import);
+		LuaWrapper::getOptionalField(L, 2, "alpha_cutout", &material.alpha_cutout);
 
-		if (lua_getfield(L, -1, "import") == LUA_TBOOLEAN)
-		{
-			material.import = LuaWrapper::toType<bool>(L, -1);
-		}
-		lua_pop(L, 1); // "import"
-
-		if (lua_getfield(L, -1, "alpha_cutout") == LUA_TBOOLEAN)
-		{
-			material.alpha_cutout = LuaWrapper::toType<bool>(L, -1);
-		}
-		lua_pop(L, 1); // "alpha_cutout"
-
-		lua_pop(L, 1); // table
 		return 0;
 	}
 
@@ -802,13 +754,13 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
-	static bool isSkinned(FbxMesh* mesh)
+	bool isSkinned(FbxMesh* mesh) const
 	{
-		return mesh->GetDeformerCount(FbxDeformer::EDeformerType::eSkin) > 0;
+		return !ignore_skeleton && mesh->GetDeformerCount(FbxDeformer::EDeformerType::eSkin) > 0;
 	}
 
 
-	static int getVertexSize(FbxMesh* mesh)
+	int getVertexSize(FbxMesh* mesh) const
 	{
 		static const int POSITION_SIZE = sizeof(float) * 3;
 		static const int NORMAL_SIZE = sizeof(u8) * 4;
@@ -1069,6 +1021,12 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 	void writeSkeleton()
 	{
+		if(ignore_skeleton)
+		{
+			write((int)0);
+			return;
+		}
+
 		write(bones.size());
 
 		for (FbxNode* node : bones)
@@ -1135,7 +1093,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	}
 
 
-	static int getAttributeCount(FbxMesh* mesh)
+	int getAttributeCount(FbxMesh* mesh) const
 	{
 		int count = 2; // position, normal
 		if (mesh->GetElementUVCount() > 0) ++count;
@@ -1482,8 +1440,13 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 				onMaterialsGUI();
 				onAnimationsGUI();
 
-				ImGui::InputFloat("Scale", &mesh_scale);
-				ImGui::InputFloat("Bounding shape scale", &bounding_shape_scale);
+				if (ImGui::CollapsingHeader("Advanced"))
+				{
+					ImGui::Checkbox("Ignore skeleton", &ignore_skeleton);
+					ImGui::Checkbox("Center mesh", &center_mesh);
+					ImGui::InputFloat("Scale", &mesh_scale);
+					ImGui::InputFloat("Bounding shape scale", &bounding_shape_scale);
+				}
 				ImGui::InputText("Output directory", output_dir.data, sizeof(output_dir));
 				ImGui::SameLine();
 				if (ImGui::Button("...###browseoutput"))
@@ -1538,6 +1501,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 	float bounding_shape_scale = 1.0f;
 	bool to_dds = false;
 	bool center_mesh = false;
+	bool ignore_skeleton = false;
 	Orientation orientation = Orientation::Y_UP;
 
 };

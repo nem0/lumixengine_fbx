@@ -361,7 +361,7 @@ struct ImportFBXPlugin LUMIX_FINAL : public StudioApp::IPlugin
 
 		lua_pushvalue(L, 2);
 
-		LuaWrapper::getOptionalField(L, 1, "import", &anim.import);
+		LuaWrapper::getOptionalField(L, -1, "import", &anim.import);
 
 		if (lua_getfield(L, -1, "filename") == LUA_TSTRING)
 		{

@@ -1,2 +1,2 @@
 # lumixengine_fbx
-LumixEngine plugin for loading FBX using FBX SDK
+Lumix Engine plugin for loading FBX using FBX SDK. This is deprecated since Lumix Engine uses [OpenFBX](https://github.com/nem0/OpenFBX) to load FBX.
